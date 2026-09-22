@@ -144,3 +144,4 @@ Xem [docs/ACCEPTANCE.md](docs/ACCEPTANCE.md) để chạy kiểm thử trên thi
 - `test/`: kiểm thử hình học điều hướng và hợp đồng routing.
 
 Tài liệu API dùng để đối chiếu: [GraphHopper](https://docs.graphhopper.com/), [flutter_map](https://pub.dev/packages/flutter_map), [Geolocator](https://pub.dev/packages/geolocator), [Speech to Text](https://pub.dev/packages/speech_to_text), [Share Plus](https://pub.dev/packages/share_plus/versions/11.1.0), [Secure Storage](https://pub.dev/packages/flutter_secure_storage/versions/9.2.4).
+# the_second_sight_mobile_app
