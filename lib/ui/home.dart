@@ -46,7 +46,7 @@ class _HomeState extends State<Home> {
       }, onError: (e) { if (mounted) setState(() => listening = false); });
       if (!ok) throw Exception('Không có nhận dạng giọng nói. Kiểm tra quyền micro hoặc nhập địa chỉ.');
       setState(() => listening = true);
-      await speech.listen(localeId: 'vi_VN', onResult: (r) {
+      await speech.listen(listenOptions: SpeechListenOptions(localeId: 'vi_VN'), onResult: (r) {
         if (!mounted) return;
         search.text = r.recognizedWords;
         if (r.finalResult) { setState(() => listening = false); findPlaces(); }
