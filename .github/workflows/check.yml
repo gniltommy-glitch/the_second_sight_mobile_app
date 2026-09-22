@@ -1,0 +1,48 @@
+name: Check SecondSight
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  flutter:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.35.5'
+          channel: stable
+          cache: true
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 scripts/bootstrap.py
+      - run: dart format --output=none lib test
+      - run: flutter analyze --no-fatal-infos
+      - run: flutter test
+      - run: flutter build apk --debug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SecondSight-debug-apk
+          path: build/app/outputs/flutter-apk/app-debug.apk
+  pi:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r pi_demo/requirements.txt
+      - run: python -m unittest discover -s pi_demo -v
+  ios:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.35.5'
+          channel: stable
+          cache: true
+      - run: python3 scripts/bootstrap.py
+      - run: flutter build ios --simulator --debug
