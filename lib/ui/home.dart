@@ -40,17 +40,37 @@ class _HomeState extends State<Home> {
   }
   Future<void> listen() async {
     await s.perform(() async {
-      if (listening) { await speech.stop(); setState(() => listening = false); return; }
-      final ok = await speech.initialize(onStatus: (status) {
-        if (mounted && status != 'listening') setState(() => listening = false);
-      }, onError: (e) { if (mounted) setState(() => listening = false); });
-      if (!ok) throw Exception('Không có nhận dạng giọng nói. Kiểm tra quyền micro hoặc nhập địa chỉ.');
+      if (listening) {
+        await speech.stop();
+        setState(() => listening = false);
+        return;
+      }
+      final ok = await speech.initialize(
+        onStatus: (status) {
+          if (mounted && status != 'listening') {
+            setState(() => listening = false);
+          }
+        },
+        onError: (e) {
+          if (mounted) setState(() => listening = false);
+        },
+      );
+      if (!ok) {
+        throw Exception(
+            'Không có nhận dạng giọng nói. Kiểm tra quyền micro hoặc nhập địa chỉ.');
+      }
       setState(() => listening = true);
-      await speech.listen(localeId: 'vi_VN', onResult: (r) {
-        if (!mounted) return;
-        search.text = r.recognizedWords;
-        if (r.finalResult) { setState(() => listening = false); findPlaces(); }
-      });
+      await speech.listen(
+        localeId: 'vi_VN',
+        onResult: (r) {
+          if (!mounted) return;
+          search.text = r.recognizedWords;
+          if (r.finalResult) {
+            setState(() => listening = false);
+            findPlaces();
+          }
+        },
+      );
     });
   }
   void select(Place p) {
