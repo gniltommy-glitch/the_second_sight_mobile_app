@@ -98,7 +98,7 @@ class AppState extends ChangeNotifier {
   Future<void> say(String text, {bool urgent = false}) async {
     if (urgent) { _phoneBlockedUntil = DateTime.now().add(const Duration(seconds: 6)); }
     else if (DateTime.now().isBefore(_phoneBlockedUntil)) { return; }
-    try { await tts.stop(); await tts.speak(text); } catch (_) { /* UI remains available */ }
+    try { await tts.stop(); await tts.speak(text); } catch (e) { log('tts_error', e.toString()); }
   }
   void log(String type, String text) {
     events.insert(0, {'time': DateTime.now().toIso8601String(), 'type': type, 'text': text});
