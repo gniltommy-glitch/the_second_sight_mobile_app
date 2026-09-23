@@ -103,7 +103,10 @@ class AppState extends ChangeNotifier {
   void log(String type, String text) {
     events.insert(0, {'time': DateTime.now().toIso8601String(), 'type': type, 'text': text});
     if (events.length > 300) events.removeRange(300, events.length);
-    if (loaded) unawaited(prefs.setString('events', jsonEncode(events)));
+    if (loaded) {
+      final snapshot = events.toList();
+      unawaited(compute(jsonEncode, snapshot).then((json) => prefs.setString('events', json)));
+    }
   }
   void _message(Map<String, dynamic> j) {
     if (j['type'] == 'device_status') {
