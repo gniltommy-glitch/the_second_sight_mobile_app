@@ -72,21 +72,30 @@ class Projection {
 /// Search near prior progress to avoid jumping across a loop or parallel street.
 Projection project(WalkRoute route, LatLng p, {int? previous}) {
   var best = const Projection(0, double.infinity, 0);
+  var bestDistance2 = double.infinity;
   final first = previous == null ? 0 : math.max(0, previous - 8);
   final last = previous == null ? route.points.length - 1 : math.min(route.points.length - 1, previous + 35);
   final scale = math.cos(p.latitude * math.pi / 180);
+  final px = p.longitude;
+  final py = p.latitude;
+
   for (var i = first; i < last; i++) {
     final a = route.points[i], b = route.points[i + 1];
-    final ax = (a.longitude - p.longitude) * 111320 * scale;
-    final ay = (a.latitude - p.latitude) * 111320;
-    final bx = (b.longitude - p.longitude) * 111320 * scale;
-    final by = (b.latitude - p.latitude) * 111320;
-    final dx = bx - ax, dy = by - ay;
+    final ax = (a.longitude - px) * scale;
+    final ay = a.latitude - py;
+    final dx = (b.longitude - a.longitude) * scale;
+    final dy = b.latitude - a.latitude;
+
     final length2 = dx * dx + dy * dy;
     final t = length2 == 0 ? 0.0 : (-(ax * dx + ay * dy) / length2).clamp(0.0, 1.0);
-    final distance = math.sqrt(math.pow(ax + t * dx, 2) + math.pow(ay + t * dy, 2));
-    if (distance < best.offRoute) {
-      best = Projection(i, distance, route.cumulative[i] + t * (route.cumulative[i + 1] - route.cumulative[i]));
+
+    final projX = ax + t * dx;
+    final projY = ay + t * dy;
+    final distance2 = projX * projX + projY * projY;
+
+    if (distance2 < bestDistance2) {
+      bestDistance2 = distance2;
+      best = Projection(i, math.sqrt(distance2) * 111320, route.cumulative[i] + t * (route.cumulative[i + 1] - route.cumulative[i]));
     }
   }
   return best;
