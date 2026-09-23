@@ -1,4 +1,4 @@
-package com.example.secondsight
+package com.secondsight.app
 
 import io.flutter.embedding.android.FlutterActivity
 
