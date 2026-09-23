@@ -84,7 +84,9 @@ Projection project(WalkRoute route, LatLng p, {int? previous}) {
     final dx = bx - ax, dy = by - ay;
     final length2 = dx * dx + dy * dy;
     final t = length2 == 0 ? 0.0 : (-(ax * dx + ay * dy) / length2).clamp(0.0, 1.0);
-    final distance = math.sqrt(math.pow(ax + t * dx, 2) + math.pow(ay + t * dy, 2));
+    final pdx = ax + t * dx;
+    final pdy = ay + t * dy;
+    final distance = math.sqrt(pdx * pdx + pdy * pdy);
     if (distance < best.offRoute) {
       best = Projection(i, distance, route.cumulative[i] + t * (route.cumulative[i + 1] - route.cumulative[i]));
     }
