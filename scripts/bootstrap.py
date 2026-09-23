@@ -45,8 +45,24 @@ def main():
     app = root.find('application')
     app.set(attr('label'), 'SecondSight')
     # Runtime PiLink also blocks HTTP unless user enables LAN test mode.
-    app.set(attr('usesCleartextTraffic'), 'true')
+    if attr('usesCleartextTraffic') in app.attrib:
+        del app.attrib[attr('usesCleartextTraffic')]
+    app.set(attr('networkSecurityConfig'), '@xml/network_security_config')
     app.set(attr('allowBackup'), 'false')
+
+    xml_dir = ROOT / 'android/app/src/main/res/xml'
+    xml_dir.mkdir(parents=True, exist_ok=True)
+    nsc = xml_dir / 'network_security_config.xml'
+    nsc.write_text('''<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">secondsight.local</domain>
+        <domain includeSubdomains="true">127.0.0.1</domain>
+        <domain includeSubdomains="true">localhost</domain>
+    </domain-config>
+</network-security-config>
+''', encoding='utf-8')
+
     queries = root.find('queries')
     if queries is None:
         queries = ET.SubElement(root, 'queries')
