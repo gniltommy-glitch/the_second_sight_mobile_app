@@ -140,17 +140,26 @@ class PiSimulator:
     async def navigation(self, request):
         try:
             data = await request.json()
-            assert isinstance(data, dict)
-            assert data.get('protocol') == 1
-            assert data.get('state') in {'idle', 'ready', 'navigating', 'paused', 'arrived'}
-            assert isinstance(data.get('session_id'), str) and 1 <= len(data['session_id']) <= 100
-            assert type(data.get('revision')) is int and data['revision'] >= 0
+            if not isinstance(data, dict):
+                raise ValueError()
+            if not data.get('protocol') == 1:
+                raise ValueError()
+            if not data.get('state') in {'idle', 'ready', 'navigating', 'paused', 'arrived'}:
+                raise ValueError()
+            if not (isinstance(data.get('session_id'), str) and 1 <= len(data['session_id']) <= 100):
+                raise ValueError()
+            if not (type(data.get('revision')) is int and data['revision'] >= 0):
+                raise ValueError()
             if data['state'] == 'navigating':
-                assert isinstance(data.get('route'), dict)
-                assert isinstance(data['route'].get('id'), str)
-                assert len(data['route'].get('points', [])) >= 2
-                assert data['route'].get('demo') is not True
-        except (ValueError, TypeError, AssertionError):
+                if not isinstance(data.get('route'), dict):
+                    raise ValueError()
+                if not isinstance(data['route'].get('id'), str):
+                    raise ValueError()
+                if not len(data['route'].get('points', [])) >= 2:
+                    raise ValueError()
+                if data['route'].get('demo') is True:
+                    raise ValueError()
+        except (ValueError, TypeError):
             raise web.HTTPBadRequest(text='Invalid navigation snapshot')
         if data['session_id'] == self.state['session_id'] and data['revision'] < self.state['revision']:
             raise web.HTTPConflict(text='Stale revision')
@@ -172,12 +181,17 @@ class PiSimulator:
     async def configure(self, request):
         try:
             j = await request.json()
-            assert isinstance(j, dict)
-            assert j['warning_level'] in {'low', 'normal', 'detailed'}
-            assert type(j['vibration']) is bool
-            assert isinstance(j['volume'], (int, float)) and 0 <= j['volume'] <= 1
-            assert isinstance(j['speech_rate'], (int, float)) and .2 <= j['speech_rate'] <= .8
-        except (ValueError, KeyError, TypeError, AssertionError):
+            if not isinstance(j, dict):
+                raise ValueError()
+            if not j['warning_level'] in {'low', 'normal', 'detailed'}:
+                raise ValueError()
+            if not type(j['vibration']) is bool:
+                raise ValueError()
+            if not (isinstance(j['volume'], (int, float)) and 0 <= j['volume'] <= 1):
+                raise ValueError()
+            if not (isinstance(j['speech_rate'], (int, float)) and .2 <= j['speech_rate'] <= .8):
+                raise ValueError()
+        except (ValueError, KeyError, TypeError):
             raise web.HTTPBadRequest(text='Invalid settings')
         self.settings = j
         self.decision.volume, self.decision.rate = j['volume'], j['speech_rate']
