@@ -85,6 +85,16 @@ def main():
     })
     with info.open('wb') as f:
         plistlib.dump(plist, f, sort_keys=False)
+    app_delegate = ROOT / 'ios/Runner/AppDelegate.swift'
+    if app_delegate.exists():
+        swift_code = app_delegate.read_text()
+        swift_code = swift_code.replace(', FlutterImplicitEngineDelegate', '')
+        swift_code = swift_code.replace('GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)', '')
+        if 'GeneratedPluginRegistrant.register(with: self)' not in swift_code:
+            swift_code = swift_code.replace('return super.application(application, didFinishLaunchingWithOptions: launchOptions)', 'GeneratedPluginRegistrant.register(with: self)\n    return super.application(application, didFinishLaunchingWithOptions: launchOptions)')
+        swift_code = re.sub(r'\n\s*func didInitializeImplicitFlutterEngine\(_ engineBridge: FlutterImplicitEngineBridge\) \{.*?\n\s*\}', '', swift_code, flags=re.DOTALL)
+        app_delegate.write_text(swift_code)
+
     subprocess.run([flutter, 'pub', 'get'], cwd=ROOT, check=True)
     print('Native Android/iOS projects configured. Next: flutter analyze && flutter test && flutter run')
 
