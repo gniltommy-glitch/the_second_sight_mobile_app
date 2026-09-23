@@ -7,7 +7,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Secondsight</string>
+	<string>SecondSight</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -66,5 +66,34 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>SecondSight dùng GPS điện thoại để chỉ đường đi bộ.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Tiếp tục GPS trong hành trình khi màn hình khóa.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Nhập điểm đến bằng giọng nói khi bạn nhấn micro.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Chuyển lời nói thành địa chỉ tìm kiếm.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Kết nối kính SecondSight trên mạng hotspot hoặc Wi-Fi của bạn.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_secondsight._tcp</string>
+		<string>_http._tcp</string>
+	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+	</array>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>tel</string>
+		<string>https</string>
+	</array>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 </dict>
 </plist>
