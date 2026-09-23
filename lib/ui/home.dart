@@ -49,7 +49,10 @@ class _HomeState extends State<Home> {
       await speech.listen(localeId: 'vi_VN', onResult: (r) {
         if (!mounted) return;
         search.text = r.recognizedWords;
-        if (r.finalResult) { setState(() => listening = false); findPlaces(); }
+        if (r.finalResult) {
+          setState(() => listening = false);
+          findPlaces();
+        }
       });
     });
   }
