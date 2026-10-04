@@ -53,6 +53,9 @@ def main():
     if not queries.findall("intent/action[@" + attr('name') + "='android.speech.RecognitionService']"):
         intent = ET.SubElement(queries, 'intent')
         ET.SubElement(intent, 'action', {attr('name'): 'android.speech.RecognitionService'})
+    if not queries.findall("intent/action[@" + attr('name') + "='android.intent.action.TTS_SERVICE']"):
+        intent = ET.SubElement(queries, 'intent')
+        ET.SubElement(intent, 'action', {attr('name'): 'android.intent.action.TTS_SERVICE'})
     for scheme in ('tel', 'https'):
         exists = any(d.get(attr('scheme')) == scheme for d in queries.findall('intent/data'))
         if not exists:

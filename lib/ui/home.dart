@@ -1,10 +1,12 @@
 import 'widgets/consumer_components.dart';
 import 'widgets/orientation_hud.dart';
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
@@ -15,6 +17,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../core/app_state.dart';
 import '../core/models.dart';
+import '../services/voice_intent.dart';
 import '../main.dart';
 import 'widgets/animated_banner.dart';
 import 'widgets/compass_widget.dart';
@@ -29,7 +32,8 @@ class Home extends StatefulWidget {
   State<Home> createState() => _HomeState();
 }
 
-class _HomeState extends State<Home> with TickerProviderStateMixin {
+class _HomeState extends State<Home>
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   int tab = 0;
   final search = TextEditingController();
   final map = MapController();
@@ -44,11 +48,23 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    s.addListener(_onNavigationChanged);
     _tabCtrl = AnimationController(vsync: this, duration: 200.ms);
+    // Blind users can't find buttons: greet and open the mic on launch.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && !s.active && s.journey != JourneyState.paused) {
+        listen(greet: true);
+      }
+    });
   }
 
   @override
   void dispose() {
+    s.removeListener(_onNavigationChanged);
+    WidgetsBinding.instance.removeObserver(this);
+    _retry?.cancel();
+    _listenSession++;
     search.dispose();
     map.dispose();
     speech.cancel();
@@ -72,39 +88,172 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
     if (mounted && version == searchVersion) setState(() => searching = false);
   }
 
-  Future<void> listen() async {
-    await s.perform(() async {
-      if (listening) {
-        await speech.stop();
-        setState(() => listening = false);
+  void _onNavigationChanged() {
+    if (!s.active && !s.offRoute && s.journey != JourneyState.paused) return;
+    _retry?.cancel();
+    // A manual Start must also close the mic, otherwise spoken directions can
+    // be transcribed as a new destination and stop the current journey.
+    if (listening && !_handlingVoice) {
+      _listenSession++;
+      speech.cancel();
+      if (mounted) setState(() => listening = false);
+    }
+  }
+
+  bool _speechReady = false;
+  bool _openingMic = false, _handlingVoice = false;
+  bool _foreground = true, _autoListen = true;
+  int _listenSession = 0;
+  Timer? _retry;
+  String partial = '';
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _foreground = state == AppLifecycleState.resumed;
+    if (!_foreground) {
+      _retry?.cancel();
+      _listenSession++;
+      speech.cancel();
+      if (mounted) setState(() => listening = false);
+    } else {
+      _scheduleListen();
+    }
+  }
+
+  // These are short foreground destination-entry sessions, not a wake-word
+  // service. Never reopen while navigation/TTS from a command is running.
+  void _scheduleListen() {
+    _retry?.cancel();
+    if (!mounted ||
+        !_foreground ||
+        !_autoListen ||
+        _handlingVoice ||
+        s.active ||
+        s.offRoute ||
+        s.journey == JourneyState.paused)
+      return;
+    _retry = Timer(const Duration(seconds: 2), () {
+      if (mounted &&
+          _foreground &&
+          _autoListen &&
+          !_handlingVoice &&
+          !s.active &&
+          !s.offRoute &&
+          s.journey != JourneyState.paused) {
+        listen(automatic: true);
+      }
+    });
+  }
+
+  /// Speak → search → route from GPS → start, without another tap.
+  Future<void> listen({bool greet = false, bool automatic = false}) async {
+    if (_openingMic || _handlingVoice || !_foreground) return;
+    _retry?.cancel();
+    if (listening) {
+      if (automatic) return;
+      _autoListen = false;
+      _listenSession++;
+      await speech.cancel();
+      if (mounted) setState(() => listening = false);
+      return;
+    }
+    if (!automatic) _autoListen = true;
+    _openingMic = true;
+    try {
+      // The greeting must not depend on a recognizer being installed/allowed.
+      if (greet) {
+        await s.say(
+          'Xin chào, mình là Aurelia. Điểm đi là vị trí GPS hiện tại. '
+          'Bạn muốn đến đâu? Hãy nói tên hoặc địa chỉ điểm đến.',
+        );
+      }
+      if (!mounted || !_foreground) return;
+      if (!_speechReady) {
+        _speechReady = await speech.initialize(
+          onStatus: (status) {
+            if (!mounted || status == 'listening') return;
+            setState(() => listening = false);
+            _scheduleListen();
+          },
+          onError: (e) {
+            if (!mounted) return;
+            setState(() => listening = false);
+            if (e.errorMsg == 'error_no_match' ||
+                e.errorMsg == 'error_speech_timeout') {
+              _scheduleListen();
+            } else {
+              _autoListen = false;
+              _retry?.cancel();
+              s.error =
+                  'Aurelia không nghe được. Kiểm tra quyền micro, '
+                  'nhận dạng giọng nói và kết nối mạng.';
+              s.say(s.error!, urgent: true);
+            }
+          },
+        );
+      }
+      if (!_speechReady) {
+        _autoListen = false;
+        s.error =
+            'Không bật được nhận dạng giọng nói. Kiểm tra quyền micro '
+            'và quyền nhận dạng giọng nói trong cài đặt điện thoại.';
+        await s.say(s.error!, urgent: true);
         return;
       }
-      final ok = await speech.initialize(
-        onStatus: (status) {
-          if (mounted && status != 'listening')
-            setState(() => listening = false);
-        },
-        onError: (e) {
-          if (mounted) setState(() => listening = false);
-        },
-      );
-      if (!ok)
-        throw Exception(
-          'Không có nhận dạng giọng nói. Kiểm tra quyền micro hoặc nhập địa chỉ.',
-        );
-      setState(() => listening = true);
+      if (!mounted || !_foreground || s.active || s.offRoute) return;
+      await s.say('Aurelia đang nghe. Mời bạn nói điểm đến.');
+      if (!mounted || !_foreground || s.active || s.offRoute) return;
+      final session = ++_listenSession;
+      var delivered = false;
+      HapticFeedback.mediumImpact();
+      setState(() {
+        listening = true;
+        partial = '';
+      });
       await speech.listen(
-        localeId: 'vi_VN',
-        onResult: (r) {
-          if (!mounted) return;
-          search.text = r.recognizedWords;
-          if (r.finalResult) {
-            setState(() => listening = false);
-            findPlaces();
+        listenOptions: SpeechListenOptions(
+          localeId: 'vi_VN',
+          listenFor: const Duration(seconds: 20),
+          pauseFor: const Duration(seconds: 3),
+        ),
+        onResult: (r) async {
+          if (!mounted ||
+              !_foreground ||
+              session != _listenSession ||
+              delivered)
+            return;
+          setState(() => partial = r.recognizedWords);
+          if (!r.finalResult || r.recognizedWords.trim().isEmpty) return;
+          delivered = true;
+          _handlingVoice = true;
+          _retry?.cancel();
+          setState(() => listening = false);
+          try {
+            await speech.cancel();
+            if (!mounted || !_foreground || session != _listenSession) return;
+            final intent = parseIntent(r.recognizedWords);
+            search.text = intent.destination ?? r.recognizedWords;
+            HapticFeedback.lightImpact();
+            await s.voiceGo(r.recognizedWords);
+          } finally {
+            _handlingVoice = false;
+            if (mounted) {
+              setState(() {});
+              _scheduleListen();
+            }
           }
         },
       );
-    });
+    } catch (_) {
+      _autoListen = false;
+      _retry?.cancel();
+      s.error = 'Không mở được micro. Hãy kiểm tra quyền nhận dạng giọng nói.';
+      await s.say(s.error!, urgent: true);
+      if (mounted) setState(() => listening = false);
+    } finally {
+      _openingMic = false;
+      if (!listening) _scheduleListen();
+    }
   }
 
   void select(Place p) {
@@ -239,65 +388,88 @@ class _HomeState extends State<Home> with TickerProviderStateMixin {
       extendBody: false,
       extendBodyBehindAppBar: true,
       appBar: _buildAppBar(),
-      body: Column(
-        children: [
-          // Extend behind status bar.
-          SizedBox(height: MediaQuery.of(context).padding.top + kToolbarHeight),
-          // Banners.
-          if (s.demo)
-            AnimatedBanner(
-              text: 'CHẾ ĐỘ MÔ PHỎNG  •  Không dùng để đi ngoài đường',
-              color: const Color(0xFF7C4F00),
-              icon: Icons.science_outlined,
-            ),
-          if (s.error != null)
-            AnimatedBanner(
-              text: s.error!,
-              color: const Color(0xFF7F1D1D),
-              icon: Icons.error_outline,
-              onClose: () {
-                s.error = null;
-                setState(() {});
-              },
-              urgent: true,
-            ),
-          if (isHazard)
-            Semantics(
-              liveRegion: true,
-              child: AnimatedBanner(
-                text: s.hazard!,
-                color: const Color(0xFF7F1D1D),
-                icon: Icons.warning_amber_rounded,
-                urgent: true,
-              ),
-            ),
-          // Page content.
-          Expanded(
-            child: PageEntrance(
-              key: ValueKey(tab),
-              child: switch (tab) {
-                0 => _NavigatePage(
-                  state: s,
-                  onDevice: () => setState(() => tab = 1),
-                  map: map,
-                  onSearch: findPlaces,
-                  onListen: listen,
-                  onSelect: select,
-                  onFavorite: favorite,
-                  results: results,
-                  searching: searching,
-                  listening: listening,
-                  search: search,
+      body: Semantics(
+        label: 'Chạm đúp bất kỳ đâu để nói điểm đến',
+        child: GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          // Double-tap anywhere opens the mic — no button to find.
+          onDoubleTap: () => listen(),
+          child: Stack(
+            children: [
+              _buildBody(isHazard),
+              if (listening)
+                Positioned.fill(
+                  child: _ListeningOverlay(
+                    text: partial,
+                    onCancel: () => listen(),
+                  ),
                 ),
-                1 => _DevicePage(state: s),
-                2 => _LogsPage(state: s, onShare: shareText),
-                _ => _SettingsPage(state: s),
-              },
-            ),
+            ],
           ),
-        ],
+        ),
       ),
       bottomNavigationBar: _buildBottomNav(),
+    );
+  }
+
+  Widget _buildBody(bool isHazard) {
+    return Column(
+      children: [
+        // Extend behind status bar.
+        SizedBox(height: MediaQuery.of(context).padding.top + kToolbarHeight),
+        // Banners.
+        if (s.demo)
+          AnimatedBanner(
+            text: 'CHẾ ĐỘ MÔ PHỎNG  •  Không dùng để đi ngoài đường',
+            color: const Color(0xFF7C4F00),
+            icon: Icons.science_outlined,
+          ),
+        if (s.error != null)
+          AnimatedBanner(
+            text: s.error!,
+            color: const Color(0xFF7F1D1D),
+            icon: Icons.error_outline,
+            onClose: () {
+              s.error = null;
+              setState(() {});
+            },
+            urgent: true,
+          ),
+        if (isHazard)
+          Semantics(
+            liveRegion: true,
+            child: AnimatedBanner(
+              text: s.hazard!,
+              color: const Color(0xFF7F1D1D),
+              icon: Icons.warning_amber_rounded,
+              urgent: true,
+            ),
+          ),
+        // Page content.
+        Expanded(
+          child: PageEntrance(
+            key: ValueKey(tab),
+            child: switch (tab) {
+              0 => _NavigatePage(
+                state: s,
+                onDevice: () => setState(() => tab = 1),
+                map: map,
+                onSearch: findPlaces,
+                onListen: listen,
+                onSelect: select,
+                onFavorite: favorite,
+                results: results,
+                searching: searching,
+                listening: listening,
+                search: search,
+              ),
+              1 => _DevicePage(state: s),
+              2 => _LogsPage(state: s, onShare: shareText),
+              _ => _SettingsPage(state: s),
+            },
+          ),
+        ),
+      ],
     );
   }
 
@@ -939,6 +1111,7 @@ class _NavPanel extends StatelessWidget {
   Widget build(BuildContext context) {
     final isActiveOrPaused =
         s.active ||
+        s.offRoute ||
         s.journey == JourneyState.paused ||
         s.journey == JourneyState.offRoute;
 
@@ -1993,9 +2166,10 @@ class _SettingsPageState extends State<_SettingsPage> {
         ),
       const SizedBox(height: 10),
       OutlinedButton.icon(
-        onPressed: () => s.perform(
-          () => s.say('SecondSight. Chúc bạn có một hành trình an toàn.'),
-        ),
+        onPressed: () => s.perform(() async {
+          await s.configureSpeech();
+          await s.say('SecondSight. Chúc bạn có một hành trình an toàn.');
+        }),
         icon: const Icon(Icons.volume_up_rounded, size: 16),
         label: const Text('Nghe thử giọng đọc'),
       ),
@@ -2112,36 +2286,48 @@ class _Stm32CalibrationRow extends StatelessWidget {
     final s = state;
     final calibrated = good && s.status['stm32_calibrated'] == true;
     final color = calibrated ? kAccent : kWarning;
-    return Row(children: [
-      Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-        decoration: BoxDecoration(
-          color: color.withValues(alpha: 0.12),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: color.withValues(alpha: 0.35)),
-        ),
-        child: Row(mainAxisSize: MainAxisSize.min, children: [
-          Icon(
-            calibrated ? Icons.check_circle_rounded : Icons.warning_amber_rounded,
-            color: color, size: 13,
+    return Row(
+      children: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.12),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: color.withValues(alpha: 0.35)),
           ),
-          const SizedBox(width: 5),
-          Text(
-            calibrated ? 'Đã hiệu chuẩn' : 'Chưa hiệu chuẩn',
-            style: TextStyle(fontSize: 11, color: color, fontWeight: FontWeight.w700),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                calibrated
+                    ? Icons.check_circle_rounded
+                    : Icons.warning_amber_rounded,
+                color: color,
+                size: 13,
+              ),
+              const SizedBox(width: 5),
+              Text(
+                calibrated ? 'Đã hiệu chuẩn' : 'Chưa hiệu chuẩn',
+                style: TextStyle(
+                  fontSize: 11,
+                  color: color,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
           ),
-        ]),
-      ),
-      const SizedBox(width: 10),
-      Expanded(
-        child: Text(
-          calibrated
-              ? 'Madgwick/Mahony sẵn sàng — heading đang xác nhận rẽ'
-              : 'Cảnh báo vật cản bằng camera vẫn hoạt động bình thường',
-          style: const TextStyle(fontSize: 11, color: kTextSub, height: 1.35),
         ),
-      ),
-    ]);
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            calibrated
+                ? 'Madgwick/Mahony sẵn sàng — heading đang xác nhận rẽ'
+                : 'Cảnh báo vật cản bằng camera vẫn hoạt động bình thường',
+            style: const TextStyle(fontSize: 11, color: kTextSub, height: 1.35),
+          ),
+        ),
+      ],
+    );
   }
 }
 
@@ -2165,55 +2351,72 @@ class _Stm32HeadingCard extends StatelessWidget {
       borderColor: calibrated
           ? kAccent.withValues(alpha: 0.25)
           : kWarning.withValues(alpha: 0.25),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          Icon(Icons.developer_board_rounded,
-            color: calibrated ? kAccent : kWarning, size: 16),
-          const SizedBox(width: 8),
-          Text(
-            'STM32F411E-DISCO  •  Madgwick / Mahony',
-            style: TextStyle(
-              fontSize: 12, fontWeight: FontWeight.w700,
-              color: calibrated ? kAccent : kWarning,
-            ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.developer_board_rounded,
+                color: calibrated ? kAccent : kWarning,
+                size: 16,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                'STM32F411E-DISCO  •  Madgwick / Mahony',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: calibrated ? kAccent : kWarning,
+                ),
+              ),
+            ],
           ),
-        ]),
-        const SizedBox(height: 12),
-        Row(children: [
-          _ImuCell(label: 'Heading', value: _fmt('stm32_heading', '°')),
-          _ImuCell(label: 'Pitch',   value: _fmt('stm32_pitch',   '°')),
-          _ImuCell(label: 'Roll',    value: _fmt('stm32_roll',    '°')),
-        ]),
-        if (s.active && calibrated) ...[
-          const SizedBox(height: 10),
-          Row(children: [
-            const Icon(Icons.arrow_forward_rounded, color: kAccent, size: 14),
-            const SizedBox(width: 6),
-            Text(
-              'Target ${s.targetBearing.toStringAsFixed(1)}°  •  '
-              'STM32 ${_fmt('stm32_heading', '°')}  •  '
-              'Δ ${(s.targetBearing - (s.status['stm32_heading'] is num ? (s.status['stm32_heading'] as num).toDouble() : s.targetBearing)).abs().toStringAsFixed(1)}°',
-              style: const TextStyle(fontSize: 11, color: kTextSub),
-            ),
-          ]),
-        ],
-        if (!calibrated) ...[
-          const SizedBox(height: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            decoration: BoxDecoration(
-              color: kWarning.withValues(alpha: 0.08),
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(color: kWarning.withValues(alpha: 0.2)),
-            ),
-            child: const Text(
-              'STM32 chưa hiệu chuẩn hoặc mất kết nối — xác nhận hướng rẽ tạm dừng. '
-              'Camera và cảm biến vẫn cảnh báo vật cản bình thường.',
-              style: TextStyle(fontSize: 11, color: kWarning, height: 1.4),
-            ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              _ImuCell(label: 'Heading', value: _fmt('stm32_heading', '°')),
+              _ImuCell(label: 'Pitch', value: _fmt('stm32_pitch', '°')),
+              _ImuCell(label: 'Roll', value: _fmt('stm32_roll', '°')),
+            ],
           ),
+          if (s.active && calibrated) ...[
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                const Icon(
+                  Icons.arrow_forward_rounded,
+                  color: kAccent,
+                  size: 14,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  'Target ${s.targetBearing.toStringAsFixed(1)}°  •  '
+                  'STM32 ${_fmt('stm32_heading', '°')}  •  '
+                  'Δ ${(s.targetBearing - (s.status['stm32_heading'] is num ? (s.status['stm32_heading'] as num).toDouble() : s.targetBearing)).abs().toStringAsFixed(1)}°',
+                  style: const TextStyle(fontSize: 11, color: kTextSub),
+                ),
+              ],
+            ),
+          ],
+          if (!calibrated) ...[
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: kWarning.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: kWarning.withValues(alpha: 0.2)),
+              ),
+              child: const Text(
+                'STM32 chưa hiệu chuẩn hoặc mất kết nối — xác nhận hướng rẽ tạm dừng. '
+                'Camera và cảm biến vẫn cảnh báo vật cản bình thường.',
+                style: TextStyle(fontSize: 11, color: kWarning, height: 1.4),
+              ),
+            ),
+          ],
         ],
-      ]),
+      ),
     );
   }
 }
@@ -2223,12 +2426,148 @@ class _ImuCell extends StatelessWidget {
   const _ImuCell({required this.label, required this.value});
   @override
   Widget build(BuildContext context) => Expanded(
-    child: Column(children: [
-      Text(value, style: const TextStyle(
-        fontSize: 18, fontWeight: FontWeight.w800, color: kText)),
-      const SizedBox(height: 2),
-      Text(label, style: const TextStyle(fontSize: 10, color: kTextSub)),
-    ]),
+    child: Column(
+      children: [
+        Text(
+          value,
+          style: const TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.w800,
+            color: kText,
+          ),
+        ),
+        const SizedBox(height: 2),
+        Text(label, style: const TextStyle(fontSize: 10, color: kTextSub)),
+      ],
+    ),
   );
 }
 
+// ─── Hands-free listening overlay (Siri-style orb) ───────────────
+class _ListeningOverlay extends StatelessWidget {
+  final String text;
+  final VoidCallback onCancel;
+  const _ListeningOverlay({required this.text, required this.onCancel});
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      liveRegion: true,
+      label: 'Đang nghe. Hãy nói điểm đến. Chạm để huỷ.',
+      child: GestureDetector(
+        onTap: onCancel,
+        child: ClipRect(
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+            child: Container(
+              color: kBg.withValues(alpha: .78),
+              alignment: Alignment.center,
+              padding: const EdgeInsets.symmetric(horizontal: 32),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SizedBox(
+                    width: 200,
+                    height: 200,
+                    child: Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        for (var i = 0; i < 3; i++)
+                          Container(
+                                width: 120,
+                                height: 120,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  border: Border.all(
+                                    color: (i.isEven ? kAccent : kAccent2)
+                                        .withValues(alpha: .5),
+                                    width: 2,
+                                  ),
+                                ),
+                              )
+                              .animate(onPlay: (c) => c.repeat())
+                              .scale(
+                                delay: (i * 500).ms,
+                                duration: 1500.ms,
+                                begin: const Offset(1, 1),
+                                end: const Offset(1.7, 1.7),
+                              )
+                              .fadeOut(delay: (i * 500).ms, duration: 1500.ms),
+                        Container(
+                              width: 112,
+                              height: 112,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                gradient: const SweepGradient(
+                                  colors: [
+                                    kAccent,
+                                    kAccent2,
+                                    Color(0xFFF472B6),
+                                    kAccent,
+                                  ],
+                                ),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: kAccent.withValues(alpha: .45),
+                                    blurRadius: 40,
+                                    spreadRadius: 4,
+                                  ),
+                                ],
+                              ),
+                              child: const Icon(
+                                Icons.mic_rounded,
+                                size: 48,
+                                color: Colors.white,
+                              ),
+                            )
+                            .animate(onPlay: (c) => c.repeat(reverse: true))
+                            .scale(
+                              duration: 900.ms,
+                              curve: Curves.easeInOut,
+                              begin: const Offset(.94, .94),
+                              end: const Offset(1.06, 1.06),
+                            )
+                            .rotate(duration: 6.seconds, begin: 0, end: .02),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 28),
+                  const Text(
+                    'Đang nghe…',
+                    style: TextStyle(
+                      color: kAccent,
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 1.2,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  AnimatedSwitcher(
+                    duration: 200.ms,
+                    child: Text(
+                      text.isEmpty ? '“Đưa tôi đến chợ Bến Thành”' : text,
+                      key: ValueKey(text),
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: text.isEmpty ? kTextSub : kText,
+                        fontSize: 26,
+                        height: 1.3,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: -.5,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 36),
+                  const Text(
+                    'Chạm để huỷ',
+                    style: TextStyle(color: kTextSub, fontSize: 13),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

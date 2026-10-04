@@ -15,6 +15,8 @@ import 'models.dart';
 import '../services/pi_link.dart';
 import '../services/location_policy.dart';
 import '../services/routing.dart';
+import '../services/voice_intent.dart';
+import '../services/speech_output.dart';
 
 // ────────────────────────────────────────────────────────────────
 //  Navigation State Machine
@@ -37,6 +39,86 @@ class AppState extends ChangeNotifier {
   final routing = RoutingService();
   final link = PiLink();
   final tts = FlutterTts();
+  late final _speechOutput = SpeechOutput(
+    speak: (text) => speechReady ? tts.speak(text) : Future.value(),
+    stop: tts.stop,
+    onError: _reportSpeechError,
+  );
+
+  bool speechReady = false;
+  String? speechIssue;
+
+  void _reportSpeechError(Object detail) {
+    speechReady = false;
+    speechIssue = detail is TimeoutException
+        ? 'Bộ đọc không phản hồi. Đã dừng thử đọc tự động. '
+              'Kiểm tra dịch vụ đọc giọng nói của điện thoại, rồi chọn Nghe thử giọng đọc.'
+        : 'Không khởi động được giọng đọc tiếng Việt. '
+              'Bộ đọc hiện tại có thể chưa hỗ trợ hoặc chưa tải giọng tiếng Việt. '
+              'Chọn bộ đọc hỗ trợ tiếng Việt trong cài đặt điện thoại, '
+              'tải giọng tiếng Việt rồi chọn Nghe thử giọng đọc.';
+    error = speechIssue;
+    log('tts_error', '$speechIssue ($detail)');
+    notifyListeners();
+  }
+
+  Future<void> configureSpeech() async {
+    speechReady = false;
+    try {
+      var language = await tts
+          .setLanguage('vi-VN')
+          .timeout(const Duration(seconds: 8));
+      if (language != 1) {
+        // Some engines expose Vietnamese as "vi" or a voice-specific locale.
+        final voices = await tts.getVoices.timeout(const Duration(seconds: 8));
+        if (voices is List) {
+          final vietnamese = voices.whereType<Map>().where((voice) {
+            final locale = '${voice['locale']}'
+                .replaceAll('_', '-')
+                .toLowerCase();
+            return locale == 'vi' || locale.startsWith('vi-');
+          }).toList();
+          // Prefer installed offline voices over voices requiring a network.
+          vietnamese.sort(
+            (a, b) => ('${a['network_required']}' == 'true' ? 1 : 0).compareTo(
+              '${b['network_required']}' == 'true' ? 1 : 0,
+            ),
+          );
+          for (final voice in vietnamese) {
+            if (voice['name'] is! String || voice['locale'] is! String)
+              continue;
+            language = await tts
+                .setLanguage(voice['locale'] as String)
+                .timeout(const Duration(seconds: 8));
+            if (language != 1) continue;
+            final selected = await tts
+                .setVoice({
+                  'name': voice['name'] as String,
+                  'locale': voice['locale'] as String,
+                })
+                .timeout(const Duration(seconds: 8));
+            if (selected == 1) break;
+            language = 0;
+          }
+        }
+      }
+      if (language != 1) {
+        throw StateError(
+          'Bộ đọc hiện tại từ chối vi-VN và không có giọng tiếng Việt khả dụng.',
+        );
+      }
+      await tts.setVolume(volume).timeout(const Duration(seconds: 8));
+      await tts.setSpeechRate(speechRate).timeout(const Duration(seconds: 8));
+      await tts.awaitSpeakCompletion(true).timeout(const Duration(seconds: 8));
+      speechReady = true;
+      if (error == speechIssue) error = null;
+      speechIssue = null;
+      notifyListeners();
+    } catch (e) {
+      _reportSpeechError(e);
+    }
+  }
+
   final secure = const FlutterSecureStorage();
   late SharedPreferences prefs;
 
@@ -141,13 +223,22 @@ class AppState extends ChangeNotifier {
         journey = JourneyState.ready;
         notice = 'Đã khôi phục tuyến lưu. Kiểm tra tuyến và nhấn Bắt đầu để tiếp tục.';
       }
+      demo = prefs.getBool('demo_mode') ?? demo;
+      if (demo) {
+        if (route == null || !route!.demo) route = demoRoute();
+        destination = route!.destination;
+        location = route!.points.first;
+        accuracy = 3;
+        fixAt = DateTime.now();
+        journey = JourneyState.ready;
+        notice =
+            'MÔ PHỎNG: vị trí, tuyến và trạng thái kính là dữ liệu giả lập.';
+      }
     } catch (_) {
       error =
           'Không đọc được một phần cấu hình đã lưu. Vui lòng kiểm tra Cài đặt.';
     }
-    await tts.setLanguage('vi-VN');
-    await tts.setVolume(volume);
-    await tts.setSpeechRate(speechRate);
+    await configureSpeech();
 
     link.onConnection = (ok) {
       if (ok) {
@@ -181,17 +272,13 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> say(String text, {bool urgent = false}) async {
+    if (!speechReady) return;
     if (urgent) {
       _phoneBlockedUntil = DateTime.now().add(const Duration(seconds: 6));
     } else if (DateTime.now().isBefore(_phoneBlockedUntil)) {
       return;
     }
-    try {
-      await tts.stop();
-      await tts.speak(text);
-    } catch (_) {
-      /* UI remains available */
-    }
+    await _speechOutput.say(text, urgent: urgent);
   }
 
   void log(String type, String text) {
@@ -418,6 +505,95 @@ class AppState extends ChangeNotifier {
     await sync();
     log('navigation_start', demo ? 'Bắt đầu mô phỏng' : 'Bắt đầu hành trình');
     notifyListeners();
+    if (demo && instruction != null && !_voiceBusy) {
+      await say('Bắt đầu mô phỏng. ${instruction!.text}');
+    }
+  }
+
+  // ─── Hands-free voice flow ────────────────────────────────────────
+  /// Last thing the voice assistant heard (shown on screen).
+  String heard = '';
+
+  /// Turn a spoken sentence into a running journey with no taps:
+  /// parse → favorites/geocode → plan from GPS → start.
+  Future<void> voiceGo(String spoken) async {
+    if (_voiceBusy) return;
+    _voiceBusy = true;
+    try {
+      await _handleVoice(spoken);
+    } finally {
+      _voiceBusy = false;
+    }
+  }
+
+  bool _voiceBusy = false;
+
+  Future<void> _handleVoice(String spoken) async {
+    heard = spoken;
+    error = null;
+    final intent = parseIntent(spoken);
+    switch (intent.command) {
+      case VoiceCommand.stop:
+        if (active || journey == JourneyState.paused) {
+          await stop();
+          await say('Đã kết thúc hành trình.');
+        } else {
+          await say('Hiện không có hành trình nào.');
+        }
+        return;
+      case VoiceCommand.repeat:
+        await say(instruction?.text ?? 'Chưa có chỉ dẫn nào.');
+        return;
+      case VoiceCommand.where:
+        await say(
+          destination == null
+              ? 'Chưa có điểm đến.'
+              : 'Đang đi đến ${destination!.name}'
+                    '${progress == null ? '' : ', còn ${progress!.remaining.round()} mét'}.',
+        );
+        return;
+      case VoiceCommand.unknown:
+        await say(
+          'Mình chưa nghe rõ điểm đến. Hãy nói tên hoặc địa chỉ nơi bạn muốn tới.',
+        );
+        return;
+      case VoiceCommand.go:
+        break;
+    }
+    final query = intent.destination!;
+    try {
+      if (active || journey == JourneyState.paused) await stop();
+      await say('Đang tìm $query.');
+      // Favorites first ("về nhà" → saved "Nhà"), then online geocode.
+      final key = fold(query);
+      Place? place;
+      for (final f in favorites) {
+        if (fold(f.name) == key) place = f;
+      }
+      if (place == null) {
+        final found = demo ? <Place>[] : await routing.search(query);
+        if (found.isEmpty && !demo) {
+          throw Exception('Không tìm thấy $query. Hãy nói tên cụ thể hơn.');
+        }
+        place = found.isEmpty ? null : found.first;
+      }
+      if (place != null && !demo) choose(place);
+      if (!demo && destination == null)
+        throw Exception('Chưa chọn được điểm đến.');
+      if (!demo) await plan();
+      final r = route ?? (throw Exception('Chưa lập được tuyến đường.'));
+      await start();
+      await say(
+        'Tuyến đến ${r.destination.name}, ${r.distance.round()} mét, '
+        'khoảng ${(r.seconds / 60).ceil()} phút. Bắt đầu dẫn đường.',
+      );
+      log('voice_go', 'Giọng nói: "$spoken" → ${r.destination.name}');
+    } catch (e) {
+      final msg = e.toString().replaceFirst('Exception: ', '');
+      error = msg;
+      notifyListeners();
+      await say(msg, urgent: true);
+    }
   }
 
   Future<void> pause() async {
@@ -426,7 +602,7 @@ class AppState extends ChangeNotifier {
     syncPending = true;
     await _applyGpsPriority();
     await WakelockPlus.disable();
-    await tts.stop();
+    await _speechOutput.cancel();
     await sync();
     notifyListeners();
   }
@@ -436,7 +612,7 @@ class AppState extends ChangeNotifier {
     journey = route == null ? JourneyState.idle : JourneyState.ready;
     _revision++;
     syncPending = true;
-    await tts.stop();
+    await _speechOutput.cancel();
     await WakelockPlus.disable();
     await _applyGpsPriority();
     await sync();
@@ -450,6 +626,7 @@ class AppState extends ChangeNotifier {
     _gps = null;
     link.disconnect();
     demo = value;
+    await prefs.setBool('demo_mode', value);
     status = {};
     statusAt = null;
     location = null;
@@ -674,7 +851,7 @@ class AppState extends ChangeNotifier {
     if (freshFix) _gpsWarned = false;
 
     // Milestone TTS check.
-    _checkMilestone();
+    if (!_voiceBusy) _checkMilestone();
 
     // Send navigation instruction to Pi via WebSocket.
     if ((active || offRoute) && instruction != null && location != null) {
@@ -706,7 +883,10 @@ class AppState extends ChangeNotifier {
         'gps_timestamp': fixAt?.toUtc().toIso8601String(),
       };
       if (!demo) link.send(m);
-      if (demo && valid && DateTime.now().isAfter(_phoneBlockedUntil)) {
+      if (demo &&
+          !_voiceBusy &&
+          valid &&
+          DateTime.now().isAfter(_phoneBlockedUntil)) {
         final key =
             '${progress!.step}:${progress!.distanceToStep < 20 ? 'near' : 'far'}';
         if (key != _lastSpoken) {
@@ -782,7 +962,7 @@ class AppState extends ChangeNotifier {
     link.onConnection = null;
     link.dispose();
     routing.dispose();
-    tts.stop();
+    _speechOutput.dispose();
     super.dispose();
   }
 }

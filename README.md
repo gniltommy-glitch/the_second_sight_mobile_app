@@ -175,3 +175,44 @@ STM32 mất kết nối, dữ liệu quá 500 ms hoặc chưa hiệu chuẩn →
 Giữ Flutter để bảo toàn app Android/iOS. Bộ component dùng Material 3, `flutter_animate` và `vector_math`: quỹ đạo/khối hướng có phép chiếu 3D, bảng HUD, trạng thái IMU và kính mờ. Phông Be Vietnam Pro được đóng gói để đọc tiếng Việt offline. Tông đen mực / xanh ngọc, chi tiết chữ Nhật tiết chế; không nhúng React hoặc web view vào app. Khối 3D có nút dừng và tôn trọng giảm chuyển động của hệ điều hành. Trạng thái STANDBY không biểu diễn một hướng đo thật.
 
 Nguồn kỹ thuật: [FLP Priority](https://developers.google.com/android/reference/com/google/android/gms/location/Priority), [OkHttp WebSockets](https://square.github.io/okhttp/), [BSP STM32F411E-Discovery](https://github.com/STMicroelectronics/32f411ediscovery-bsp).
+
+
+## Aurelia — nhập điểm đến bằng giọng nói
+
+Chọn luồng điểm đi = GPS hiện tại. Sau khi cấp quyền micro, nhận dạng giọng
+nói và vị trí, mở app: Aurelia hỏi điểm đến và tự mở mic. Nói “chợ Bến Thành”
+hoặc “Aurelia ơi, hôm nay điểm đến là chợ Bến Thành còn nơi đi là nhà”.
+App lấy phần điểm đến, tìm địa điểm (ưu tiên yêu thích), tính tuyến từ GPS và
+bắt đầu dẫn đường, không cần bấm Tìm, Lấy tuyến hay Bắt đầu. Phần nơi đi trong
+câu nói không thay thế GPS. Ô tìm kiếm hiển thị điểm đến đã nhận dạng.
+
+Nếu chưa nghe rõ hoặc không tìm thấy, app tự mở lại một phiên nghe sau lời
+nhắc. Nút mic và chạm đúp màn hình vẫn có thể mở phiên nghe thủ công; hủy nghe
+sẽ dừng tự nghe cho tới khi mở lại mic. App ngừng nghe khi ra nền và không tự
+mở mic trong hành trình để tránh thu lại chỉ dẫn. Khi có nhiều kết quả tìm kiếm,
+app dùng kết quả đầu tiên và đọc tên địa điểm được chọn.
+
+Không tích hợp Picovoice Porcupine hay khóa dịch vụ nhận dạng riêng. Đây là
+nhận dạng câu ngắn khi app ở trước màn hình, **không phải gọi đánh thức nền
+như Siri**. “Aurelia”/“Aurealia” trong câu là tiền tố tùy chọn. Nhận dạng phụ
+thuộc dịch vụ hệ điều hành và có thể cần mạng. GraphHopper vẫn cần API key như
+luồng nhập tay; hành trình thật vẫn yêu cầu kính đã kết nối và GPS đạt chuẩn.
+Nếu thiếu quyền/dịch vụ nhận dạng, app đọc lỗi và dừng thử lại tự động.
+
+Kiểm tra trên thiết bị thật: cấp/từ chối quyền lần đầu; im lặng rồi nói ở phiên
+kế tiếp; nói câu ví dụ trên; chuyển app ra nền trong lúc nghe; tắt mạng;
+thử GPS yếu và kính chưa kết nối; xác nhận không thông báo đã bắt đầu khi lỗi.
+
+### Bản sửa âm thanh 1.1.1+3
+
+- Khai báo `android.intent.action.TTS_SERVICE` trong APK và script bootstrap.
+- Lời chào Aurelia chạy trước khi khởi tạo dịch vụ nhận dạng; thiếu quyền mic
+  không còn chặn lời chào. Mic chỉ mở sau khi câu hỏi đọc xong.
+- Câu đọc thường được phát tuần tự; cảnh báo khẩn, tạm dừng và kết thúc mới
+  ngắt hàng đợi. Chờ TTS có giới hạn; lỗi/thiếu giọng tiếng Việt hiện thông báo
+  và sự kiện `tts_error` trong Nhật ký, không bị bỏ qua.
+- Bắt đầu mô phỏng bằng nút sẽ đọc ngay chỉ dẫn đầu tiên và đóng mic để không
+  nhận nhầm tiếng của app thành điểm đến mới.
+- Kiểm thử dùng dịch vụ giọng nói giả lập; vẫn cần nghe và nói thử trên Android
+  thật. Điện thoại phải có dịch vụ TTS với giọng tiếng Việt, dịch vụ nhận dạng
+  giọng nói và quyền micro. Âm lượng phương tiện của hệ điều hành cần bật.
