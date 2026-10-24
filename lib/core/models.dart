@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:latlong2/latlong.dart';
@@ -23,10 +24,25 @@ double bearingTo(LatLng a, LatLng b) {
 class Place {
   final String name;
   final LatLng point;
-  const Place(this.name, this.point);
-  Map<String, dynamic> toJson() => {'name': name, 'point': xy(point)};
-  factory Place.fromJson(Map<String, dynamic> j) =>
-      Place(j['name'], coordinate(j['point']));
+
+  /// Street / district / city, used for "Bạn muốn đến … tại …" prompts.
+  /// Empty for favourites and places picked on the map.
+  final String address;
+  const Place(this.name, this.point, {this.address = ''});
+
+  /// Name plus address, for places where one line must identify the place.
+  String get label => address.isEmpty ? name : '$name, $address';
+
+  Map<String, dynamic> toJson() => {
+    'name': name,
+    'point': xy(point),
+    if (address.isNotEmpty) 'address': address,
+  };
+  factory Place.fromJson(Map<String, dynamic> j) => Place(
+    j['name'],
+    coordinate(j['point']),
+    address: j['address'] is String ? j['address'] as String : '',
+  );
 }
 
 class Maneuver {
@@ -168,4 +184,40 @@ NavProgress progressFor(WalkRoute r, Projection p, LatLng location) {
     remain,
     remain < 12 && meters(location, r.points.last) < 15 && p.offRoute < 20,
   );
+}
+
+/// A relative/caregiver the user can call from the SOS sheet.
+class EmergencyContact {
+  final String name, phone;
+  const EmergencyContact(this.name, this.phone);
+
+  /// Name/note if given, otherwise the number itself.
+  String get label => name.trim().isEmpty ? phone : name.trim();
+
+  Map<String, dynamic> toJson() => {'name': name, 'phone': phone};
+
+  factory EmergencyContact.fromJson(Map<String, dynamic> j) =>
+      EmergencyContact('${j['name'] ?? ''}', '${j['phone'] ?? ''}');
+
+  /// Reads the saved list, migrating the single legacy number from ≤1.2.3.
+  static List<EmergencyContact> decode(String? json, {String legacy = ''}) {
+    final out = <EmergencyContact>[];
+    if (json != null && json.isNotEmpty) {
+      try {
+        final list = jsonDecode(json);
+        if (list is List) {
+          for (final e in list.whereType<Map>()) {
+            final c = EmergencyContact.fromJson(Map<String, dynamic>.from(e));
+            if (c.phone.trim().isNotEmpty) out.add(c);
+          }
+        }
+      } catch (_) {}
+      return out;
+    }
+    if (legacy.trim().isNotEmpty) out.add(EmergencyContact('', legacy.trim()));
+    return out;
+  }
+
+  static String encode(List<EmergencyContact> list) =>
+      jsonEncode(list.map((c) => c.toJson()).toList());
 }

@@ -1,3 +1,11 @@
+### Bản sửa 1.2.3+8 — chờ câu gọi cục bộ và GPS/xem tuyến
+
+Android dùng Vosk đi kèm APK để chờ “Hey Aurelia” liên tục, bỏ chu kỳ SpeechRecognizer và banner chờ gây phiền. Phiên nghe lệnh chỉ mở khi người dùng kích hoạt. App tự lấy vị trí điện thoại, hiển thị vị trí gần đúng, cho xem trước tuyến đi bộ không cần kính. Ngưỡng GPS 20 m giữ riêng cho chỉ dẫn rẽ; xem tuyến dùng vị trí mới với sai số tối đa 100 m. [Hướng dẫn](docs/ASSISTIVE_CONTROLS.md), [giấy phép mô hình](docs/THIRD_PARTY_WAKE.md).
+
+### Bản sửa giọng nói 1.2.2+7
+
+Bỏ tự hỏi lại điểm đến/lệnh sau im lặng hoặc quay lại app. Hỏi điểm đến một lần khi mở; phiên tiếp theo do câu gọi hoặc thao tác mic. Giữ chữ nhận dạng tạm thời khi Android thiếu kết quả cuối, điền ô điểm đến và xử lý một lần. Câu gọi có thể kích hoạt từ kết quả tạm thời, hỗ trợ phiên âm tiếng Việt. Mic nền trong hành trình được giữ; hết phiên lệnh thì quay về chờ im lặng. Xem [hướng dẫn](docs/ASSISTIVE_CONTROLS.md).
+
 # SecondSight — ứng dụng đồng hành với kính
 
 Mã nguồn Flutter dùng chung Android/iOS, giao diện tiếng Việt. Điện thoại lấy GPS, tìm tuyến đi bộ và gửi chỉ dẫn; kính chịu trách nhiệm nhận thức môi trường, ưu tiên an toàn và phát âm thanh. Không có video streaming hoặc YOLO trên điện thoại.
@@ -188,13 +196,10 @@ câu nói không thay thế GPS. Ô tìm kiếm hiển thị điểm đến đã
 
 Nếu chưa nghe rõ hoặc không tìm thấy, app tự mở lại một phiên nghe sau lời
 nhắc. Nút mic và chạm đúp màn hình vẫn có thể mở phiên nghe thủ công; hủy nghe
-sẽ dừng tự nghe cho tới khi mở lại mic. App ngừng nghe khi ra nền và không tự
-mở mic trong hành trình để tránh thu lại chỉ dẫn. Khi có nhiều kết quả tìm kiếm,
-app dùng kết quả đầu tiên và đọc tên địa điểm được chọn.
+sẽ dừng tự nghe cho tới khi mở lại mic. Ngoài hành trình, app ngừng nghe khi ra nền; Android tiếp tục mic nền nếu đang dẫn đường/lệch tuyến. Khi đang đi, nút mic, chạm đúp, nút tai nghe được Android chuyển tới app hoặc sự kiện nút kính đều mở được một phiên lệnh; chỉ dẫn tạm ngừng đọc trong phiên đó. Khi có nhiều kết quả tìm kiếm,
+app đọc tên, địa chỉ và yêu cầu xác nhận có/không; không tự bắt đầu trên kết quả đầu tiên.
 
-Không tích hợp Picovoice Porcupine hay khóa dịch vụ nhận dạng riêng. Đây là
-nhận dạng câu ngắn khi app ở trước màn hình, **không phải gọi đánh thức nền
-như Siri**. “Aurelia”/“Aurealia” trong câu là tiền tố tùy chọn. Nhận dạng phụ
+“Hey Aurelia” tự bật trong hành trình; tùy chọn gọi ngoài hành trình mặc định tắt. App tạm ngừng chờ tên gọi khi đọc hướng dẫn/cảnh báo. Android chuyển sang dịch vụ mic nền khi khóa máy trong hành trình. **Android 1.2.1 có dịch vụ mic nền trong hành trình; iOS chỉ hỗ trợ khi app hiển thị**, không tích hợp mô hình wake-word riêng. “Aurelia”/“Aurealia” trong câu là tiền tố tùy chọn. Nhận dạng phụ
 thuộc dịch vụ hệ điều hành và có thể cần mạng. GraphHopper vẫn cần API key như
 luồng nhập tay; hành trình thật vẫn yêu cầu kính đã kết nối và GPS đạt chuẩn.
 Nếu thiếu quyền/dịch vụ nhận dạng, app đọc lỗi và dừng thử lại tự động.
@@ -216,3 +221,13 @@ thử GPS yếu và kính chưa kết nối; xác nhận không thông báo đã
 - Kiểm thử dùng dịch vụ giọng nói giả lập; vẫn cần nghe và nói thử trên Android
   thật. Điện thoại phải có dịch vụ TTS với giọng tiếng Việt, dịch vụ nhận dạng
   giọng nói và quyền micro. Âm lượng phương tiện của hệ điều hành cần bật.
+
+
+## Bản 1.2.0+5 — hỗ trợ khi đang đi
+
+Mic trong hành trình, lệnh nhắc lại/dừng/còn bao xa, xác nhận điểm đến, đọc suy giảm hỗ trợ, phối hợp âm thanh app–Pi, kiểm tra camera/LiDAR/telemetry và xác nhận nghe thử trước hành trình thật, QR cấu hình một lần. Xem [hướng dẫn và giới hạn](docs/ASSISTIVE_CONTROLS.md). Pi cần triển khai `/audio/test`, `audio_yielded`, `hazard_hold`, `hazard_clear` như server mẫu cập nhật. Bản mã này chưa được thử trên điện thoại và kính thật.
+
+
+## Bản 1.2.1+6 — gọi khi app ở nền/khóa màn hình
+
+Android tự khởi động dịch vụ mic khi đang dẫn đường/lệch tuyến, trước khi app ra nền. Cấp quyền micro và thông báo, bắt đầu hành trình rồi khóa máy: nói “Hey Aurelia”, chờ lời mời và nói lệnh. Tạm dừng/dừng/đến nơi tắt dịch vụ; thông báo có nút tắt gọi tự động. Dịch vụ nhường mic khi điện thoại/Pi đọc, có timeout và hủy transcript cũ khi có cảnh báo. Chưa thử khóa màn hình trên điện thoại thật; vẫn phụ thuộc dịch vụ nhận dạng/mạng/tiết kiệm pin. Chi tiết trong [hướng dẫn](docs/ASSISTIVE_CONTROLS.md).

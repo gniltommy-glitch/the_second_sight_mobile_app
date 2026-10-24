@@ -7,6 +7,7 @@ class SpeechOutput {
     required this.speak,
     required this.stop,
     required this.onError,
+    this.onActivity,
     this.timeout = const Duration(seconds: 20),
   });
 
@@ -14,12 +15,14 @@ class SpeechOutput {
   final Future<dynamic> Function() stop;
   final void Function(Object) onError;
   final Duration timeout;
+  final void Function(bool)? onActivity;
   Future<void> _tail = Future.value();
   int _generation = 0;
   bool _disposed = false;
 
   Future<void> cancel() async {
     _generation++;
+    onActivity?.call(false);
     _tail = Future.value();
     try {
       await stop().timeout(timeout);
@@ -38,6 +41,7 @@ class SpeechOutput {
     try {
       await previous;
       if (_disposed || generation != _generation) return;
+      onActivity?.call(true);
       final result = await speak(text).timeout(timeout);
       if (result == 0 && generation == _generation && !_disposed) {
         onError(StateError('Dịch vụ đọc giọng nói từ chối phát âm thanh.'));
@@ -48,6 +52,7 @@ class SpeechOutput {
         await cancel();
       }
     } finally {
+      if (!_disposed && generation == _generation) onActivity?.call(false);
       done.complete();
     }
   }

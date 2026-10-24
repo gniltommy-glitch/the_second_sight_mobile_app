@@ -43,6 +43,41 @@ void main() {
     go('đến khu công nghiệp Dung Quất', 'khu công nghiệp Dung Quất');
   });
 
+  test('direct call and location sharing commands', () {
+    final call1 = parseIntent('gọi cho Mẹ');
+    expect(call1.command, VoiceCommand.call);
+    expect(call1.recipient, 'Mẹ');
+
+    final call2 = parseIntent('Aurelia ơi gọi cho anh Nam nhé');
+    expect(call2.command, VoiceCommand.call);
+    expect(call2.recipient, 'anh Nam');
+
+    final call3 = parseIntent('gọi 115');
+    expect(call3.command, VoiceCommand.call);
+    expect(call3.recipient, '115');
+
+    final call4 = parseIntent('gọi cấp cứu');
+    expect(call4.command, VoiceCommand.call);
+    expect(call4.recipient, 'cấp cứu');
+
+    final share1 = parseIntent('chia sẻ vị trí');
+    expect(share1.command, VoiceCommand.shareLocation);
+    expect(share1.recipient, isNull);
+
+    final share2 = parseIntent('chia sẻ vị trí cho Mẹ');
+    expect(share2.command, VoiceCommand.shareLocation);
+    expect(share2.recipient, 'Mẹ');
+
+    final share3 = parseIntent('gửi GPS cho tất cả');
+    expect(share3.command, VoiceCommand.shareLocation);
+    expect(share3.recipient, 'tất cả');
+
+    expect(parseIntent('kết thúc cuộc gọi, Aurelia').command, VoiceCommand.endCall);
+    expect(parseIntent('kết thúc cuộc gọi').command, VoiceCommand.endCall);
+    expect(parseIntent('dừng cuộc gọi').command, VoiceCommand.endCall);
+    expect(parseIntent('hủy khẩn cấp').command, VoiceCommand.cancelEmergency);
+  });
+
   test('empty or meaningless input is unknown', () {
     expect(parseIntent('Aurelia ơi').command, VoiceCommand.unknown);
     expect(parseIntent('Aurealia').command, VoiceCommand.unknown);

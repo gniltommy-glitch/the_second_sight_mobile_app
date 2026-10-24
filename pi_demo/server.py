@@ -14,7 +14,12 @@ from stm32_imu import STM32IMUReceiverThread
 
 
 class DecisionManager:
-    """Local hazard interrupts route speech. Navigation expires independently."""
+    """Pi speaks hazards and safety status only; the phone speaks turn guidance.
+
+    Navigation frames are still validated and expire independently (TTL) and are
+    used for STM32 turn confirmation, but are never read aloud here, so the two
+    devices cannot both announce the same turn.
+    """
     def __init__(self, voice=False, imu=None):
         self.imu = imu
         self.turn_state = {"heading_valid": False, "turn_confirmed": False, "heading_error": None}
@@ -51,6 +56,25 @@ class DecisionManager:
             await self.process.wait()
         self.process = None
 
+    def speech_ms(self, text):
+        """Estimated espeak-ng duration for [text] at the configured rate."""
+        words_per_minute = 100 + self.rate * 180
+        return round(len(text.split()) / words_per_minute * 60000) + 300
+
+    def hold_ms(self, text):
+        """How long the phone must stay silent: speech + margin, 2-8 s."""
+        return max(2000, min(8000, self.speech_ms(text) + 1500))
+
+    async def wait_spoken(self, text):
+        """Wait until the current utterance has finished playing."""
+        process = self.process
+        if process is not None:
+            with contextlib.suppress(ProcessLookupError):
+                await process.wait()
+        else:
+            # Text-only simulator: pretend to speak for the estimated time.
+            await asyncio.sleep(self.speech_ms(text) / 1000)
+
     async def instruction(self, msg):
         self.turn_state = {"heading_valid": False, "turn_confirmed": False, "heading_error": None}
         if self.imu and msg.get('gps_valid') and msg.get('action') != 'hold':
@@ -65,10 +89,7 @@ class DecisionManager:
                 await self.silence()
             return
         self.navigation_until = time.monotonic() + min(msg['valid_for_ms'], 3000) / 1000
-        key = (msg['route_id'], msg['step_index'], msg['distance_m'] < 20)
-        if key != self.last_instruction and time.monotonic() >= self.blocked_until:
-            if await self.say(f"{msg['distance_m']} mét. {msg['text']}"):
-                self.last_instruction = key
+        # Turn guidance is spoken by the phone only (see class docstring).
 
     async def watchdog(self):
         if self.navigation_until and time.monotonic() > self.navigation_until:
@@ -89,6 +110,53 @@ class PiSimulator:
         self.decision = DecisionManager(voice, imu)
         self.task = None
         self.last_ping = time.monotonic()
+        self.hazard_seq = 0
+        self.active_hazard = None
+        self.clear_task = None
+        self.yield_ack = None
+
+    async def alert(self, text, payload):
+        """Raise a hazard: tell the phone to go silent FIRST, then speak.
+
+        The phone cancels its own TTS on `hazard` and stays silent for
+        `hold_ms` (fallback TTL) or until the matching `hazard_clear`.
+        """
+        self.hazard_seq += 1
+        hazard_id = f'h-{self.hazard_seq}'
+        self.active_hazard = hazard_id
+        ack = self.yield_ack = asyncio.get_running_loop().create_future()
+        await self.broadcast({'type': 'hazard', 'hazard_id': hazard_id,
+            'hold_ms': self.decision.hold_ms(text), **payload})
+        if self.peers:
+            # Bound the handshake: a missing phone must never delay safety
+            # speech indefinitely. New app versions acknowledge TTS stop.
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(asyncio.shield(ack), .2)
+        await self.decision.say(text, urgent=True)
+        if self.clear_task and not self.clear_task.done():
+            self.clear_task.cancel()
+        self.clear_task = asyncio.create_task(self._clear_after(hazard_id, text))
+        return hazard_id
+
+    async def _clear_after(self, hazard_id, text):
+        speech = asyncio.create_task(self.decision.wait_spoken(text))
+        try:
+            while not speech.done():
+                await asyncio.wait({speech}, timeout=1)
+                if not speech.done() and hazard_id == self.active_hazard:
+                    # Renew silence throughout long speech; do not rely only
+                    # on an estimated duration or release on an old clear.
+                    await self.broadcast({'type': 'hazard_hold',
+                        'hazard_id': hazard_id, 'hold_ms': 3000})
+            await speech
+            if hazard_id == self.active_hazard:
+                self.active_hazard = None
+                await self.broadcast({'type': 'hazard_clear', 'hazard_id': hazard_id})
+        finally:
+            if not speech.done():
+                speech.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await speech
 
     async def broadcast(self, data):
         for peer in list(self.peers):
@@ -125,7 +193,11 @@ class PiSimulator:
                     msg = json.loads(frame.data)
                     if not isinstance(msg, dict):
                         continue
-                    if msg.get('type') == 'ping':
+                    if msg.get('type') == 'audio_yielded':
+                        if (msg.get('hazard_id') == self.active_hazard and
+                                self.yield_ack and not self.yield_ack.done()):
+                            self.yield_ack.set_result(True)
+                    elif msg.get('type') == 'ping':
                         self.last_ping = time.monotonic()
                         await ws.send_json({'type': 'pong'})
                     elif msg.get('type') == 'navigation_instruction':
@@ -198,13 +270,23 @@ class PiSimulator:
         self.decision.volume, self.decision.rate = j['volume'], j['speech_rate']
         return web.json_response({'ok': True})
 
+    async def audio_test(self, request):
+        if self.active_hazard:
+            raise web.HTTPConflict(text='Safety alert in progress')
+        if not self.decision.voice or not shutil.which('espeak-ng'):
+            raise web.HTTPServiceUnavailable(text='Pi speech output unavailable')
+        await self.alert('Kiểm tra âm thanh kính. Bạn có nghe rõ không?', {
+            'severity': 'info', 'hazard_class': 'audio_test',
+            'message': 'Đang thử âm thanh kính.'})
+        return web.json_response({'ok': True})
+
     async def hazard(self, request):
-        # Explicit demo endpoint. Production sensor fusion calls DecisionManager directly.
-        await self.decision.say('Mô phỏng. Dừng lại — có mép hụt phía trước.', urgent=True)
-        await self.broadcast({'type': 'hazard', 'demo': True, 'hazard_class': 'drop_off',
-            'distance_m': 1.2, 'severity': 'stop', 'confidence': .91,
+        # Explicit demo endpoint. Production sensor fusion calls alert() directly.
+        hazard_id = await self.alert('Mô phỏng. Dừng lại — có mép hụt phía trước.', {
+            'demo': True, 'hazard_class': 'drop_off', 'distance_m': 1.2,
+            'severity': 'stop', 'confidence': .91,
             'message': 'Mô phỏng: có mép hụt phía trước.'})
-        return web.json_response({'ok': True, 'demo': True})
+        return web.json_response({'ok': True, 'demo': True, 'hazard_id': hazard_id})
 
 
 def valid_instruction(j):
@@ -236,6 +318,7 @@ def create_app(token, voice=False, imu=None):
     app.router.add_post('/navigation/state', sim.navigation)
     app.router.add_post('/settings', sim.configure)
     app.router.add_post('/demo/hazard', sim.hazard)
+    app.router.add_post('/audio/test', sim.audio_test)
 
     async def status(_):
         return web.json_response({'demo': True, 'state': sim.state['state']})
@@ -252,6 +335,10 @@ def create_app(token, voice=False, imu=None):
         sim.task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await sim.task
+        if sim.clear_task and not sim.clear_task.done():
+            sim.clear_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await sim.clear_task
         for ws in list(sim.peers):
             await ws.close()
         await sim.decision.silence()

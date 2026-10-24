@@ -1,11 +1,11 @@
 import 'package:geolocator/geolocator.dart';
 
-/// FLP priorities: medium = BALANCED, bestForNavigation = HIGH_ACCURACY.
+/// Both modes request high accuracy; only navigation keeps a foreground service.
 LocationSettings locationSettingsFor(bool navigating) => AndroidSettings(
   forceLocationManager: false,
   accuracy: navigating
       ? LocationAccuracy.bestForNavigation
-      : LocationAccuracy.medium,
+      : LocationAccuracy.high,
   distanceFilter: 0,
   intervalDuration: Duration(seconds: navigating ? 1 : 5),
   foregroundNotificationConfig: navigating
@@ -17,7 +17,7 @@ LocationSettings locationSettingsFor(bool navigating) => AndroidSettings(
       : null,
 );
 
-/// Reject inaccurate, future, out-of-order and stale fixes, including cold start.
+/// Keep valid coarse fixes for display; turn guidance checks accuracy separately.
 bool acceptsPosition(Position p, DateTime now, {DateTime? previous}) {
   final age = now.difference(p.timestamp);
   return p.latitude.isFinite &&
@@ -26,7 +26,6 @@ bool acceptsPosition(Position p, DateTime now, {DateTime? previous}) {
       p.longitude.abs() <= 180 &&
       p.accuracy.isFinite &&
       p.accuracy >= 0 &&
-      p.accuracy <= 20 &&
       !age.isNegative &&
       age <= const Duration(seconds: 8) &&
       (previous == null || p.timestamp.isAfter(previous));

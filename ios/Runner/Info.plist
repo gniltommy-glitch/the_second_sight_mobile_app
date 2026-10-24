@@ -70,6 +70,8 @@
 	<string>SecondSight dùng GPS điện thoại để chỉ đường đi bộ.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>Tiếp tục GPS trong hành trình khi màn hình khóa.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Quét mã QR cấu hình kính do người hỗ trợ cung cấp.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Nhập điểm đến bằng giọng nói khi bạn nhấn micro.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>

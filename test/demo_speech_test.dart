@@ -10,7 +10,7 @@ void main() {
   const channel = MethodChannel('flutter_tts');
 
   test('demo timer sends spoken directions to phone without glasses', () async {
-    SharedPreferences.setMockInitialValues({});
+    SharedPreferences.setMockInitialValues({'demo_mode': true});
     FlutterSecureStorage.setMockInitialValues({});
     final utterances = <String>[];
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
@@ -35,7 +35,11 @@ void main() {
     state.accuracy = 3;
     state.fixAt = DateTime.now();
     state.journey = JourneyState.navigating;
-    await Future<void>.delayed(const Duration(milliseconds: 1200));
+    // Wait for the actual timer and asynchronous TTS queue, rather than
+    // assuming a loaded machine delivers both within exactly 1.2 seconds.
+    for (var i = 0; i < 50 && utterances.isEmpty; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
     expect(
       utterances,
       isNotEmpty,
@@ -69,8 +73,9 @@ void main() {
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async {
           calls.add(call);
-          if (call.method == 'setLanguage')
+          if (call.method == 'setLanguage') {
             return call.arguments == 'vi' ? 1 : 0;
+          }
           if (call.method == 'getVoices') {
             return [
               {'name': 'Vietnamese', 'locale': 'vi'},
@@ -92,8 +97,9 @@ void main() {
     binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (
       call,
     ) async {
-      if (call.method == 'speak')
+      if (call.method == 'speak') {
         fail('Must not speak after configuration failed');
+      }
       if (call.method == 'getVoices') return <dynamic>[];
       return call.method == 'setLanguage' ? 0 : 1;
     });

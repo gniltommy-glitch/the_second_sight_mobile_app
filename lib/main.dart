@@ -4,6 +4,7 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'core/app_state.dart';
 import 'ui/home.dart';
+import 'ui/landing_page.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -295,97 +296,37 @@ class _SecondSightAppState extends State<SecondSightApp> {
           ),
         ),
       ),
-      home: ListenableBuilder(
-        listenable: state,
-        builder: (context, _) =>
-            state.loaded ? Home(state: state) : const _SplashScreen(),
-      ),
+      home: _AppEntry(state: state),
     );
   }
 }
 
-class _SplashScreen extends StatefulWidget {
-  const _SplashScreen();
+class _AppEntry extends StatefulWidget {
+  final AppState state;
+  const _AppEntry({required this.state});
+
   @override
-  State<_SplashScreen> createState() => _SplashScreenState();
+  State<_AppEntry> createState() => _AppEntryState();
 }
 
-class _SplashScreenState extends State<_SplashScreen>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl;
-  late final Animation<double> _pulse;
-
-  @override
-  void initState() {
-    super.initState();
-    _ctrl = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1400),
-    )..repeat(reverse: true);
-    _pulse = Tween<double>(
-      begin: 0.6,
-      end: 1.0,
-    ).animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut));
-  }
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
+class _AppEntryState extends State<_AppEntry> {
+  bool _entered = false;
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: kBg,
-      body: Center(
-        child: AnimatedBuilder(
-          animation: _pulse,
-          builder: (context, _) => Opacity(
-            opacity: _pulse.value,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    color: kAccent.withValues(alpha: 0.1),
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                      color: kAccent.withValues(alpha: 0.3),
-                      width: 1.5,
-                    ),
-                  ),
-                  child: const Icon(
-                    Icons.visibility_outlined,
-                    color: kAccent,
-                    size: 42,
-                  ),
-                ),
-                const SizedBox(height: 20),
-                Text(
-                  'SecondSight',
-                  style: TextStyle(
-                    fontFamily: 'BeVietnamPro',
-                    fontSize: 26,
-                    fontWeight: FontWeight.w800,
-                    color: kAccent,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Đang khởi động...',
-                  style: TextStyle(
-                    fontFamily: 'BeVietnamPro',
-                    fontSize: 13,
-                    color: kTextSub,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
+    return ListenableBuilder(
+      listenable: widget.state,
+      builder: (context, _) {
+        if (widget.state.loaded && _entered) {
+          return Home(state: widget.state);
+        }
+        return LandingPage(
+          state: widget.state,
+          onEnter: () {
+            if (mounted) setState(() => _entered = true);
+          },
+        );
+      },
     );
   }
 }

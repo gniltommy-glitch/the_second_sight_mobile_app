@@ -3,6 +3,9 @@ import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:secondsight/core/app_state.dart';
 import 'package:secondsight/services/routing.dart';
+import 'package:secondsight/services/pi_link.dart';
+import 'package:http/testing.dart';
+import 'package:http/http.dart' as http;
 
 class VoiceState extends AppState {
   final spoken = <String>[];
@@ -10,8 +13,15 @@ class VoiceState extends AppState {
   bool failStart = false;
   Completer<void>? hold;
 
-  VoiceState() {
+  VoiceState()
+    : super(
+        piLink: PiLink(
+          client: MockClient((_) async => http.Response('{}', 200)),
+        ),
+      ) {
+    link.connected = true;
     favorites.add(demoRoute().destination);
+    listenReply = () async => 'có';
   }
 
   @override
@@ -73,6 +83,21 @@ void main() {
         isFalse,
       );
       expect(s.spoken.last, contains('Kết nối kính'));
+    },
+  );
+
+  test(
+    'voice can preview walking route without glasses instead of failing start',
+    () async {
+      final state = VoiceState();
+      state.link.connected = false;
+      await state.voiceGo('điểm đến là ${state.favorites.first.name}');
+      expect(state.plans, 1);
+      expect(state.starts, 0);
+      expect(state.route, isNotNull);
+      expect(state.error, isNull);
+      expect(state.spoken.last, contains('Đã lấy tuyến đi bộ'));
+      state.dispose();
     },
   );
 

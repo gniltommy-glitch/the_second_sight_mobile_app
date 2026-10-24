@@ -1,5 +1,10 @@
 package com.example.secondsight
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import android.view.KeyEvent
 import android.os.Handler
 import android.os.Looper
 import io.flutter.embedding.android.FlutterActivity
@@ -16,6 +21,94 @@ class MainActivity : FlutterActivity() {
     private var events: EventChannel.EventSink? = null
     private var socket: WebSocket? = null
     private var socketId: Int? = null
+    private var voiceChannel: MethodChannel? = null
+    private var visible = false
+    private var voiceStarting = false
+    private var permissionReply: MethodChannel.Result? = null
+    private var permissionResumeReply: MethodChannel.Result? = null
+    private var voiceBlocked = true
+    private var voiceAllowBackground = false
+    private var voiceInterrupted = false
+
+    private fun startNavigationVoice(result: MethodChannel.Result) {
+        try {
+            val intent = Intent(this, NavigationVoiceService::class.java)
+                .putExtra("blocked", voiceBlocked)
+                .putExtra("allowBackground", voiceAllowBackground)
+            voiceStarting = true
+            if (Build.VERSION.SDK_INT >= 26) startForegroundService(intent) else startService(intent)
+            result.success(true)
+            main.postDelayed({ voiceStarting = false }, 1000)
+        } catch (_: Exception) {
+            voiceStarting = false
+            result.error("voice_service", "Mở app để bật mic nền trước khi khóa màn hình.", null)
+        }
+    }
+
+    private fun configureNavigationVoice(call: io.flutter.plugin.common.MethodCall, result: MethodChannel.Result) {
+        voiceBlocked = call.argument<Boolean>("blocked") ?: true
+        voiceAllowBackground = call.argument<Boolean>("allowBackground") ?: false
+        voiceInterrupted = call.argument<Boolean>("interrupt") ?: false
+        if (call.argument<Boolean>("enabled") != true) {
+            stopService(Intent(this, NavigationVoiceService::class.java))
+            permissionReply?.success(false)
+            permissionReply = null
+            permissionResumeReply?.success(false)
+            permissionResumeReply = null
+            result.success(false)
+            return
+        }
+        val service = NavigationVoiceService.instance
+        if (service != null) {
+            service.update(voiceBlocked, voiceInterrupted, voiceAllowBackground)
+            result.success(true)
+            return
+        }
+        if (voiceStarting || permissionReply != null || permissionResumeReply != null) { result.success(false); return }
+        if (!visible) {
+            result.error("voice_background_start", "Mở app để bật mic nền, rồi khóa màn hình.", null)
+            return
+        }
+        val permissions = mutableListOf<String>()
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED)
+            permissions.add(Manifest.permission.RECORD_AUDIO)
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+            permissions.add(Manifest.permission.POST_NOTIFICATIONS)
+        if (permissions.isNotEmpty()) {
+            permissionReply = result
+            requestPermissions(permissions.toTypedArray(), 4201)
+        } else startNavigationVoice(result)
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode != 4201) return
+        val reply = permissionReply ?: return
+        permissionReply = null
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            reply.error("voice_permission", "Chưa có quyền micro. Aurelia không nghe khi khóa màn hình.", null)
+        } else if (visible) startNavigationVoice(reply)
+        else permissionResumeReply = reply
+    }
+
+    override fun onResume() {
+        super.onResume()
+        visible = true
+        NavigationVoiceService.background = false
+        NavigationVoiceService.instance?.refresh()
+        permissionResumeReply?.let {
+            permissionResumeReply = null
+            startNavigationVoice(it)
+        }
+    }
+
+    override fun onPause() {
+        visible = false
+        NavigationVoiceService.background = true
+        NavigationVoiceService.instance?.refresh()
+        super.onPause()
+    }
+
 
     private fun emit(id: Int, type: String, text: String? = null) {
         main.post { if (socketId == id) events?.success(mapOf("id" to id, "type" to type, "text" to text)) }
@@ -24,6 +117,20 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         val messenger = flutterEngine.dartExecutor.binaryMessenger
+        voiceChannel = MethodChannel(messenger, "secondsight/voice")
+        NavigationVoiceService.emit = { method, value -> main.post { voiceChannel?.invokeMethod(method, value) } }
+        voiceChannel?.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "configureNavigation" -> configureNavigationVoice(call, result)
+                "activateCommand" -> { NavigationVoiceService.instance?.activateCommand(); result.success(null) }
+                "commandReady" -> {
+                    call.argument<Int>("ticket")?.let { NavigationVoiceService.instance?.commandReady(it) }
+                    result.success(null)
+                }
+                "commandFinished" -> { NavigationVoiceService.instance?.commandFinished(); result.success(null) }
+                else -> result.notImplemented()
+            }
+        }
         EventChannel(messenger, "secondsight/okhttp/events").setStreamHandler(object : EventChannel.StreamHandler {
             override fun onListen(arguments: Any?, sink: EventChannel.EventSink) { events = sink }
             override fun onCancel(arguments: Any?) { events = null }
@@ -65,7 +172,25 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.keyCode in setOf(KeyEvent.KEYCODE_HEADSETHOOK,
+                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE, KeyEvent.KEYCODE_VOICE_ASSIST)) {
+            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                voiceChannel?.invokeMethod("activate", null)
+            }
+            return true
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
     override fun onDestroy() {
+        stopService(Intent(this, NavigationVoiceService::class.java))
+        permissionReply?.success(false)
+        permissionReply = null
+        permissionResumeReply?.success(false)
+        permissionResumeReply = null
+        NavigationVoiceService.emit = null
+        voiceChannel = null
         socket?.cancel()
         events = null
         client.dispatcher.executorService.shutdown()

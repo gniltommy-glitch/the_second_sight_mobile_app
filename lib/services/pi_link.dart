@@ -9,6 +9,7 @@ import 'pi_socket.dart';
 /// Android WebSocket uses native OkHttp through a Flutter platform channel.
 /// No video. Authentication occurs in headers only, never in URLs or event logs.
 class PiLink {
+  PiLink({http.Client? client}) : _http = client ?? http.Client();
   void Function(Map<String, dynamic>)? onMessage;
   void Function(bool)? onConnection;
 
@@ -23,7 +24,7 @@ class PiLink {
   String endpoint = 'http://secondsight.local:8765', token = '';
   bool allowInsecure = false;
 
-  final http.Client _http = http.Client();
+  final http.Client _http;
 
   // ─── URI helpers ─────────────────────────────────────────────────
   Uri _uri(String path, {bool ws = false}) {
@@ -152,8 +153,9 @@ class PiLink {
           body: jsonEncode(data),
         )
         .timeout(const Duration(seconds: 7));
-    if (r.statusCode != 200)
+    if (r.statusCode != 200) {
       throw Exception('Pi từ chối lệnh (${r.statusCode}).');
+    }
   }
 
   // ─── Lifecycle ───────────────────────────────────────────────────

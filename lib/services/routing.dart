@@ -24,36 +24,62 @@ class RoutingService {
     } on http.ClientException {
       throw Exception('Không kết nối được dịch vụ bản đồ. Kiểm tra Internet.');
     }
-    if (r.statusCode != 200)
+    if (r.statusCode != 200) {
       throw Exception(
         'Dịch vụ bản đồ trả lỗi ${r.statusCode}. Kiểm tra key, hạn mức và mạng.',
       );
+    }
     return jsonDecode(r.body) as Map<String, dynamic>;
   }
 
-  Future<List<Place>> search(String q) async {
+  /// Geocode [q]. When [near] is given, GraphHopper ranks nearby places
+  /// first so a common name ("Highlands Coffee") resolves to the local one.
+  Future<List<Place>> search(String q, {LatLng? near}) async {
     final j = await _get(
       Uri.parse('$base/geocode').replace(
-        queryParameters: {'key': key, 'q': q, 'locale': 'vi', 'limit': '7'},
+        queryParameters: {
+          'key': key,
+          'q': q,
+          'locale': 'vi',
+          'limit': '7',
+          if (near != null) 'point': '${near.latitude},${near.longitude}',
+        },
       ),
     );
-    return (j['hits'] as List)
-        .where((h) => h['point'] != null)
-        .map(
-          (h) => Place(
-            [
-              h['name'],
-              h['street'],
-              h['city'],
-              h['country'],
-            ].whereType<String>().toSet().join(', '),
-            LatLng(
-              (h['point']['lat'] as num).toDouble(),
-              (h['point']['lng'] as num).toDouble(),
-            ),
-          ),
-        )
-        .toList();
+    final places = <Place>[];
+    for (final h in (j['hits'] as List).whereType<Map>()) {
+      final point = h['point'];
+      if (point is! Map || point['lat'] is! num || point['lng'] is! num) {
+        continue;
+      }
+      final street = [
+        h['housenumber'],
+        h['street'],
+      ].whereType<String>().where((s) => s.trim().isNotEmpty).join(' ');
+      final name = [h['name'], street, h['city']]
+          .whereType<String>()
+          .firstWhere((s) => s.trim().isNotEmpty, orElse: () => q);
+      final address = <String>[];
+      for (final part in [street, h['district'], h['city'], h['state']]) {
+        if (part is! String || part.trim().isEmpty) continue;
+        if (part == name || address.contains(part)) continue;
+        address.add(part);
+      }
+      final place = Place(
+        name,
+        LatLng(
+          (point['lat'] as num).toDouble(),
+          (point['lng'] as num).toDouble(),
+        ),
+        address: address.join(', '),
+      );
+      // The same POI often comes back as node + way; keep the first.
+      final duplicate = places.any(
+        (p) => p.name == place.name && meters(p.point, place.point) < 30,
+      );
+      if (!duplicate) places.add(place);
+    }
+    return places;
   }
 
   Future<WalkRoute> route(LatLng from, Place to) async {

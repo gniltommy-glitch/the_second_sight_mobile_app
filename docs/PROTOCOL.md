@@ -118,3 +118,15 @@ Quaternion `[w,x,y,z]` phải chuẩn hóa và đã chuyển sang hệ quy chi�
 Pi trả `{"type":"turn_status","sequence":12,"heading_valid":true,"heading_error":2,"turn_confirmed":true}` ứng với frame đã qua kiểm tra session/revision/sequence. Cờ này là snapshot tại thời điểm xử lý, hết giá trị theo TTL của chỉ dẫn và IMU; consumer không được giữ vô thời hạn. Khi heading không hợp lệ: `heading_valid:false`, `turn_confirmed:false`, `heading_error:null`. Cờ `stm32_heading_valid` từ app chỉ tham khảo, không có quyền xác nhận hướng.
 
 Mất STM32/chưa hiệu chuẩn không tắt camera, LiDAR, cảm biến khoảng cách hay ngắt hazard. Server mẫu chưa có driver perception; Decision Manager giữ hazard độc lập với IMU và navigation.
+
+
+## Bổ sung Aurelia 1.2.0 (protocol vẫn bằng 1)
+
+- Pi → app: `voice_button` gọi mic một lần khi app ở trước màn hình.
+- Pi → app: `hazard` có `hazard_id`, `hold_ms`; gửi trước phát cảnh báo.
+- App → Pi: `audio_yielded` cùng `hazard_id`, sau khi hủy TTS. Pi chờ tối đa 200 ms.
+- Pi → app: `hazard_hold` cùng ID mỗi giây khi vẫn đang phát. App gia hạn im lặng ba giây; bỏ qua ID cũ.
+- Pi → app: `hazard_clear` cùng ID khi đã phát xong. App chờ thêm 600 ms.
+- `POST /audio/test`, bearer token: thử loa thật qua cùng luồng nhường âm thanh; 200 khi phát được, 409 khi đang cảnh báo, 503 khi engine chưa sẵn sàng. Phải kiểm tra cả driver/loa trong triển khai Pi thật. Người dùng vẫn phải xác nhận nghe rõ trước khi app bắt đầu.
+
+Pi chỉ đọc cảnh báo/hỗ trợ an toàn; điện thoại đọc hướng dẫn rẽ. Không dùng Pi cũ đọc cả hướng dẫn rẽ cùng app mới. Có TTL và timeout khi mất kết nối; mạng và hệ điều hành vẫn cần nghiệm thu độ trễ trên phần cứng. Xem [hướng dẫn](ASSISTIVE_CONTROLS.md).

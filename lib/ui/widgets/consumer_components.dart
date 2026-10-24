@@ -194,7 +194,7 @@ class JourneyWelcome extends StatelessWidget {
                     ? 'Đang dùng kính mô phỏng'
                     : connected
                     ? 'Kính đã kết nối'
-                    : 'Kết nối kính để bắt đầu',
+                    : 'Xem tuyến không cần kính',
                 style: const TextStyle(fontSize: 12, color: Color(0xFFD4E1E5)),
               ),
             ),

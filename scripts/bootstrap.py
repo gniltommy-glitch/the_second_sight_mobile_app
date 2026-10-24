@@ -36,14 +36,19 @@ def main():
     root = tree.getroot()
     permissions = ['INTERNET', 'ACCESS_NETWORK_STATE', 'ACCESS_WIFI_STATE',
         'ACCESS_FINE_LOCATION', 'ACCESS_COARSE_LOCATION', 'FOREGROUND_SERVICE',
-        'FOREGROUND_SERVICE_LOCATION', 'RECORD_AUDIO', 'VIBRATE', 'WAKE_LOCK']
+        'FOREGROUND_SERVICE_LOCATION', 'FOREGROUND_SERVICE_MICROPHONE', 'POST_NOTIFICATIONS', 'RECORD_AUDIO', 'CAMERA', 'VIBRATE', 'WAKE_LOCK']
     existing = {p.get(attr('name')) for p in root.findall('uses-permission')}
     for p in permissions:
         p = 'android.permission.' + p
         if p not in existing:
             ET.SubElement(root, 'uses-permission', {attr('name'): p})
+    if not root.findall("uses-feature[@" + attr('name') + "='android.hardware.camera']"):
+        ET.SubElement(root, 'uses-feature', {attr('name'): 'android.hardware.camera', attr('required'): 'false'})
     app = root.find('application')
     app.set(attr('label'), 'SecondSight')
+    if not any(s.get(attr('name')) == '.NavigationVoiceService' for s in app.findall('service')):
+        ET.SubElement(app, 'service', {attr('name'): '.NavigationVoiceService',
+            attr('exported'): 'false', attr('foregroundServiceType'): 'microphone', attr('stopWithTask'): 'true'})
     # Runtime PiLink also blocks HTTP unless user enables LAN test mode.
     app.set(attr('usesCleartextTraffic'), 'true')
     app.set(attr('allowBackup'), 'false')
@@ -78,6 +83,7 @@ def main():
         'CFBundleDisplayName': 'SecondSight',
         'NSLocationWhenInUseUsageDescription': 'SecondSight dùng GPS điện thoại để chỉ đường đi bộ.',
         'NSLocationAlwaysAndWhenInUseUsageDescription': 'Tiếp tục GPS trong hành trình khi màn hình khóa.',
+        'NSCameraUsageDescription': 'Quét mã QR cấu hình kính do người hỗ trợ cung cấp.',
         'NSMicrophoneUsageDescription': 'Nhập điểm đến bằng giọng nói khi bạn nhấn micro.',
         'NSSpeechRecognitionUsageDescription': 'Chuyển lời nói thành địa chỉ tìm kiếm.',
         'NSLocalNetworkUsageDescription': 'Kết nối kính SecondSight trên mạng hotspot hoặc Wi-Fi của bạn.',

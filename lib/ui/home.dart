@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -18,6 +19,8 @@ import 'package:url_launcher/url_launcher.dart';
 import '../core/app_state.dart';
 import '../core/models.dart';
 import '../services/voice_intent.dart';
+import '../services/pairing_config.dart';
+import 'pairing_scanner.dart';
 import '../main.dart';
 import 'widgets/animated_banner.dart';
 import 'widgets/compass_widget.dart';
@@ -27,21 +30,116 @@ import 'widgets/nav_instruction.dart';
 
 class Home extends StatefulWidget {
   final AppState state;
-  const Home({super.key, required this.state});
+  final SpeechToText? recognizer;
+  final int initialTab;
+  const Home({
+    super.key,
+    required this.state,
+    this.recognizer,
+    this.initialTab = 0,
+  });
   @override
   State<Home> createState() => _HomeState();
 }
 
 class _HomeState extends State<Home>
     with TickerProviderStateMixin, WidgetsBindingObserver {
-  int tab = 0;
+  late int tab = widget.initialTab;
   final search = TextEditingController();
   final map = MapController();
-  final speech = SpeechToText();
+  late final speech = widget.recognizer ?? SpeechToText();
   List<Place> results = [];
   bool searching = false, listening = false;
   int searchVersion = 0;
   late final AnimationController _tabCtrl;
+
+  static const _hardwareVoice = MethodChannel('secondsight/voice');
+  bool _wakeListening = false, _recognizerReady = false;
+  Timer? _wakeRetry;
+  JourneyState? _lastJourney;
+  int _micHazardEpoch = 0;
+  (bool, bool, bool, bool)? _nativeVoiceConfiguration;
+  bool _nativeVoiceFailed = false, _foregroundWakeFailed = false;
+  int _wakeSettingRevision = 0;
+  bool _didAutoMoveMap = false;
+  bool get _android =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
+  void _syncNativeVoice() {
+    if (!_android) return;
+    final configuration = (
+      s.wakeActive &&
+          (_foreground || s.navigationVoiceActive) &&
+          !_nativeVoiceFailed,
+      s.speechPlaying ||
+          s.phoneSpeechBlocked ||
+          (_foreground && (s.commandMicOpen || _handlingVoice || _openingMic)),
+      s.piAudioBlocked,
+      s.navigationVoiceActive,
+    );
+    if (configuration == _nativeVoiceConfiguration) return;
+    _nativeVoiceConfiguration = configuration;
+    unawaited(
+      _hardwareVoice
+          .invokeMethod('configureNavigation', {
+            'enabled': configuration.$1,
+            'blocked': configuration.$2,
+            'interrupt': configuration.$3,
+            'allowBackground': configuration.$4,
+          })
+          .catchError((Object error) {
+            if (!mounted || !configuration.$1) return;
+            _nativeVoiceFailed = true;
+            s.reportBackgroundVoiceError(
+              'Chưa bật được mic nền. Mở app, kiểm tra quyền micro và thử lại.',
+            );
+          }),
+    );
+  }
+
+  Future<void> _nativeVoiceEvent(MethodCall call) async {
+    if (!mounted) return;
+    switch (call.method) {
+      case 'activate':
+        _hardwareCommand();
+      case 'backgroundListening':
+        if (!_foreground) s.setCommandMicOpen(call.arguments == true);
+      case 'backgroundMuted':
+        await s.setWakeEnabled(false);
+        await s.setNavigationWakeEnabled(false);
+      case 'backgroundError':
+        _nativeVoiceFailed = true;
+        s.reportBackgroundVoiceError('${call.arguments}');
+      case 'backgroundWake':
+        if (s.piAudioBlocked) return;
+        if (_foreground) {
+          if (s.wakeActive) await listen();
+          return;
+        }
+        if (!s.navigationVoiceActive) return;
+        final epoch = s.hazardEpoch;
+        await s.say(
+          'Aurelia đang nghe. Mời bạn nói nhắc lại, dừng dẫn đường hoặc còn bao xa.',
+        );
+        if (!mounted ||
+            _foreground ||
+            !s.navigationVoiceActive ||
+            s.piAudioBlocked ||
+            epoch != s.hazardEpoch) {
+          return;
+        }
+        await _hardwareVoice.invokeMethod('commandReady', {
+          'ticket': call.arguments,
+        });
+      case 'backgroundCommand':
+        s.setCommandMicOpen(false);
+        try {
+          if (!_foreground) await s.backgroundVoiceCommand('${call.arguments}');
+        } finally {
+          await _hardwareVoice.invokeMethod('commandFinished');
+        }
+    }
+  }
 
   AppState get s => widget.state;
 
@@ -50,21 +148,47 @@ class _HomeState extends State<Home>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     s.addListener(_onNavigationChanged);
+    s.listenReply = _listenOnce;
+    s.cancelReply = _cancelReply;
+    s.requestVoiceCommand = _hardwareCommand;
+    _lastJourney = s.journey;
+    _hardwareVoice.setMethodCallHandler(_nativeVoiceEvent);
     _tabCtrl = AnimationController(vsync: this, duration: 200.ms);
     // Blind users can't find buttons: greet and open the mic on launch.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && !s.active && s.journey != JourneyState.paused) {
+      if (mounted &&
+          !s.active &&
+          !s.offRoute &&
+          s.journey != JourneyState.paused) {
         listen(greet: true);
       }
+      _syncNativeVoice();
+      _scheduleWake();
+      _autoLocate();
     });
   }
 
   @override
   void dispose() {
     s.removeListener(_onNavigationChanged);
+    s.requestVoiceCommand = null;
+    if (_android) {
+      unawaited(
+        _hardwareVoice
+            .invokeMethod('configureNavigation', {'enabled': false})
+            .catchError((Object _) {}),
+      );
+    }
+    _hardwareVoice.setMethodCallHandler(null);
+    _wakeRetry?.cancel();
+    s.commandMicOpen = false;
+    if (s.listenReply == _listenOnce) s.listenReply = null;
+    if (s.cancelReply == _cancelReply) s.cancelReply = null;
+    _finishReply(null);
     WidgetsBinding.instance.removeObserver(this);
-    _retry?.cancel();
+    _recognitionEnd?.cancel();
     _listenSession++;
+    _completeRecognition = null;
     search.dispose();
     map.dispose();
     speech.cancel();
@@ -88,76 +212,288 @@ class _HomeState extends State<Home>
     if (mounted && version == searchVersion) setState(() => searching = false);
   }
 
-  void _onNavigationChanged() {
-    if (!s.active && !s.offRoute && s.journey != JourneyState.paused) return;
-    _retry?.cancel();
-    // A manual Start must also close the mic, otherwise spoken directions can
-    // be transcribed as a new destination and stop the current journey.
-    if (listening && !_handlingVoice) {
-      _listenSession++;
-      speech.cancel();
-      if (mounted) setState(() => listening = false);
+  void _hardwareCommand() {
+    if (!mounted) return;
+    if (_foreground) {
+      unawaited(listen());
+    } else if (s.navigationVoiceActive && _android) {
+      unawaited(_hardwareVoice.invokeMethod('activateCommand'));
     }
+  }
+
+  void _finishNativeCommand() {
+    if (!_android) return;
+    _syncNativeVoice();
+    unawaited(
+      _hardwareVoice.invokeMethod('commandFinished').catchError((Object _) {}),
+    );
+  }
+
+  void _closeMic() {
+    _listenSession++;
+    _completeRecognition = null;
+    _recognitionEnd?.cancel();
+    speech.cancel();
+    s.commandMicOpen = false;
+    _syncNativeVoice();
+    _wakeListening = false;
+    _recognizerReady = false;
+    _finishReply(null);
+    _finishNativeCommand();
+    if (mounted) setState(() => listening = false);
+  }
+
+  Future<void> _autoLocate() async {
+    if (s.demo) return;
+    if (s.location != null && !_didAutoMoveMap) {
+      _didAutoMoveMap = true;
+      try {
+        map.move(s.location!, 17);
+      } catch (_) {}
+    }
+    if (!s.freshFix) {
+      try {
+        await s.perform(() async {
+          await s.locate();
+          if (mounted && s.location != null && !_didAutoMoveMap) {
+            _didAutoMoveMap = true;
+            try {
+              map.move(s.location!, 17);
+            } catch (_) {}
+          }
+        });
+      } catch (_) {}
+    }
+  }
+
+  void _onNavigationChanged() {
+    if (s.location != null && !_didAutoMoveMap) {
+      _didAutoMoveMap = true;
+      try {
+        map.move(s.location!, 17);
+      } catch (_) {}
+    }
+    if (_wakeSettingRevision != s.navigationWakeRevision) {
+      _wakeSettingRevision = s.navigationWakeRevision;
+      _nativeVoiceFailed = false;
+      _foregroundWakeFailed = false;
+      _nativeVoiceConfiguration = null;
+    }
+    final changed = _lastJourney != s.journey;
+    _lastJourney = s.journey;
+    // A new journey closes an old destination-entry mic. Ordinary GPS ticks
+    // must not close a deliberately opened command mic.
+    if (listening &&
+        ((changed && !_handlingVoice) ||
+            s.hazardEpoch != _micHazardEpoch ||
+            (_wakeListening &&
+                (s.speechPlaying || s.phoneSpeechBlocked || !s.wakeActive)))) {
+      _closeMic();
+    }
+    _syncNativeVoice();
+    _scheduleWake();
+  }
+
+  void _scheduleWake() {
+    // Android owns a continuous local wake stream, without recognizer tones.
+    if (_android) return;
+    if (_wakeRetry?.isActive == true ||
+        !mounted ||
+        !_foreground ||
+        !s.wakeActive ||
+        _foregroundWakeFailed ||
+        listening ||
+        _openingMic ||
+        _handlingVoice ||
+        s.speechPlaying ||
+        s.phoneSpeechBlocked ||
+        s.pendingConfirm != null) {
+      return;
+    }
+    _wakeRetry = Timer(const Duration(seconds: 2), () {
+      if (mounted &&
+          _foreground &&
+          s.wakeActive &&
+          !listening &&
+          !s.speechPlaying &&
+          !s.phoneSpeechBlocked &&
+          s.pendingConfirm == null) {
+        listen(wake: true);
+      }
+    });
   }
 
   bool _speechReady = false;
   bool _openingMic = false, _handlingVoice = false;
-  bool _foreground = true, _autoListen = true;
+  bool _foreground = true;
   int _listenSession = 0;
-  Timer? _retry;
+  Timer? _recognitionEnd;
+  void Function()? _completeRecognition;
   String partial = '';
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     _foreground = state == AppLifecycleState.resumed;
     if (!_foreground) {
-      _retry?.cancel();
-      _listenSession++;
-      speech.cancel();
-      if (mounted) setState(() => listening = false);
+      _recognitionEnd?.cancel();
+      _wakeRetry?.cancel();
+      _closeMic();
     } else {
-      _scheduleListen();
+      _nativeVoiceFailed = false;
+      _foregroundWakeFailed = false;
+      _nativeVoiceConfiguration = null;
+      _scheduleWake();
+    }
+    _syncNativeVoice();
+  }
+
+  // ─── One-shot yes/no reply (destination confirmation) ─────────────
+  Completer<String?>? _reply;
+
+  void _finishReply(String? text) {
+    final reply = _reply;
+    _reply = null;
+    if (reply != null && !reply.isCompleted) reply.complete(text);
+  }
+
+  /// Open the mic for a short answer. Runs inside a voice command, so
+  /// [_handlingVoice] is already true and auto-listen stays off.
+  Future<String?> _listenOnce() async {
+    if (!mounted || !_foreground) return null;
+    speech.statusListener = _recognitionStatus;
+    speech.errorListener = _recognitionError;
+    if (!_speechReady) {
+      _speechReady = await speech.initialize(
+        onStatus: _recognitionStatus,
+        onError: _recognitionError,
+      );
+    }
+    if (!mounted || !_foreground || s.piAudioBlocked) return null;
+    if (!_speechReady) {
+      final buttons = _reply = Completer<String?>();
+      final reply = await buttons.future.timeout(
+        const Duration(seconds: 30),
+        onTimeout: () => null,
+      );
+      if (identical(_reply, buttons)) _reply = null;
+      return reply;
+    }
+    _finishReply(null);
+    final done = _reply = Completer<String?>();
+    final session = ++_listenSession;
+    var lastWords = '';
+    _completeRecognition = () {
+      if (session != _listenSession || !identical(_reply, done)) return;
+      _completeRecognition = null;
+      _recognitionEnd?.cancel();
+      _finishReply(lastWords.isEmpty ? null : lastWords);
+    };
+    _micHazardEpoch = s.hazardEpoch;
+    s.commandMicOpen = true;
+    HapticFeedback.mediumImpact();
+    setState(() {
+      listening = true;
+      partial = '';
+    });
+    try {
+      await speech.listen(
+        listenOptions: SpeechListenOptions(
+          localeId: 'vi_VN',
+          listenFor: const Duration(seconds: 8),
+          pauseFor: const Duration(seconds: 2),
+        ),
+        onResult: (r) {
+          if (!mounted || session != _listenSession || done.isCompleted) {
+            return;
+          }
+          setState(() => partial = r.recognizedWords);
+          if (r.recognizedWords.trim().isNotEmpty) {
+            lastWords = r.recognizedWords.trim();
+          }
+          if (r.finalResult) _completeRecognition?.call();
+        },
+      );
+    } catch (_) {
+      if (identical(_reply, done)) _finishReply(null);
+    }
+    final text = await done.future.timeout(
+      const Duration(seconds: 12),
+      onTimeout: () => lastWords.isEmpty ? null : lastWords,
+    );
+    if (identical(_reply, done)) _reply = null;
+    if (session == _listenSession) {
+      _completeRecognition = null;
+      _recognitionEnd?.cancel();
+      await speech.cancel();
+      s.commandMicOpen = false;
+      if (mounted) setState(() => listening = false);
+    }
+    return text;
+  }
+
+  /// Close the reply mic because the answer came from a button.
+  void _cancelReply() {
+    if (_reply == null) return;
+    _closeMic();
+  }
+
+  void _recognitionStatus(String status) {
+    if (!mounted) return;
+    if (status == 'listening') {
+      setState(() => _recognizerReady = true);
+      return;
+    }
+    if (status == 'done' || status == 'notListening') {
+      setState(() => _recognizerReady = false);
+      // Some Android engines end the mic before publishing the final text.
+      // Keep this session's last partial and allow that final result to arrive.
+      if (_completeRecognition != null) {
+        _recognitionEnd?.cancel();
+        _recognitionEnd = Timer(const Duration(milliseconds: 2500), () {
+          _completeRecognition?.call();
+        });
+      }
     }
   }
 
-  // These are short foreground destination-entry sessions, not a wake-word
-  // service. Never reopen while navigation/TTS from a command is running.
-  void _scheduleListen() {
-    _retry?.cancel();
-    if (!mounted ||
-        !_foreground ||
-        !_autoListen ||
-        _handlingVoice ||
-        s.active ||
-        s.offRoute ||
-        s.journey == JourneyState.paused)
-      return;
-    _retry = Timer(const Duration(seconds: 2), () {
-      if (mounted &&
-          _foreground &&
-          _autoListen &&
-          !_handlingVoice &&
-          !s.active &&
-          !s.offRoute &&
-          s.journey != JourneyState.paused) {
-        listen(automatic: true);
-      }
-    });
+  void _recognitionError(dynamic e) {
+    if (!mounted) return;
+    s.commandMicOpen = false;
+    setState(() => listening = false);
+    if (e.errorMsg == 'error_no_match' ||
+        e.errorMsg == 'error_speech_timeout') {
+      _completeRecognition?.call();
+    } else {
+      _completeRecognition = null;
+      _finishReply(null);
+      _recognitionEnd?.cancel();
+      _wakeRetry?.cancel();
+      // Permission/service failures must not produce endless wake retries.
+      _foregroundWakeFailed = true;
+      unawaited(s.setWakeEnabled(false));
+      s.error = 'Aurelia không nghe được. Kiểm tra quyền micro, nhận dạng giọng nói và kết nối mạng.';
+      unawaited(s.say(s.error!, urgent: true));
+    }
   }
 
   /// Speak → search → route from GPS → start, without another tap.
-  Future<void> listen({bool greet = false, bool automatic = false}) async {
+  Future<void> listen({bool greet = false, bool wake = false}) async {
     if (_openingMic || _handlingVoice || !_foreground) return;
-    _retry?.cancel();
+    _recognitionEnd?.cancel();
+    _wakeRetry?.cancel();
+    if (s.piAudioBlocked) {
+      s.notice = 'Đang có cảnh báo từ kính. Chờ cảnh báo kết thúc rồi gọi mic.';
+      setState(() {});
+      return;
+    }
+    if (listening && _wakeListening && !wake) _closeMic();
     if (listening) {
-      if (automatic) return;
-      _autoListen = false;
       _listenSession++;
       await speech.cancel();
+      s.commandMicOpen = false;
       if (mounted) setState(() => listening = false);
       return;
     }
-    if (!automatic) _autoListen = true;
     _openingMic = true;
     try {
       // The greeting must not depend on a recognizer being installed/allowed.
@@ -168,91 +504,138 @@ class _HomeState extends State<Home>
         );
       }
       if (!mounted || !_foreground) return;
+      speech.statusListener = _recognitionStatus;
+      speech.errorListener = _recognitionError;
       if (!_speechReady) {
         _speechReady = await speech.initialize(
-          onStatus: (status) {
-            if (!mounted || status == 'listening') return;
-            setState(() => listening = false);
-            _scheduleListen();
-          },
-          onError: (e) {
-            if (!mounted) return;
-            setState(() => listening = false);
-            if (e.errorMsg == 'error_no_match' ||
-                e.errorMsg == 'error_speech_timeout') {
-              _scheduleListen();
-            } else {
-              _autoListen = false;
-              _retry?.cancel();
-              s.error =
-                  'Aurelia không nghe được. Kiểm tra quyền micro, '
-                  'nhận dạng giọng nói và kết nối mạng.';
-              s.say(s.error!, urgent: true);
-            }
-          },
+          onStatus: _recognitionStatus,
+          onError: _recognitionError,
         );
       }
       if (!_speechReady) {
-        _autoListen = false;
+        _foregroundWakeFailed = true;
+        await s.setWakeEnabled(false);
         s.error =
             'Không bật được nhận dạng giọng nói. Kiểm tra quyền micro '
             'và quyền nhận dạng giọng nói trong cài đặt điện thoại.';
         await s.say(s.error!, urgent: true);
         return;
       }
-      if (!mounted || !_foreground || s.active || s.offRoute) return;
-      await s.say('Aurelia đang nghe. Mời bạn nói điểm đến.');
-      if (!mounted || !_foreground || s.active || s.offRoute) return;
+      if (!mounted || !_foreground || s.piAudioBlocked) return;
+      if (!wake && !greet) {
+        await s.cancelSpeech();
+        await s.say(
+          s.active || s.offRoute || s.journey == JourneyState.paused
+              ? 'Mời bạn nói lệnh: nhắc lại, dừng dẫn đường, hoặc còn bao xa.'
+              : 'Aurelia đang nghe. Mời bạn nói điểm đến.',
+        );
+      }
+      if (!mounted ||
+          !_foreground ||
+          s.piAudioBlocked ||
+          (wake && s.speechPlaying)) {
+        return;
+      }
       final session = ++_listenSession;
+      _micHazardEpoch = s.hazardEpoch;
+      _wakeListening = wake;
+      _recognizerReady = false;
+      s.commandMicOpen = !wake;
+      _syncNativeVoice();
       var delivered = false;
       HapticFeedback.mediumImpact();
       setState(() {
         listening = true;
         partial = '';
       });
+      var lastWords = '';
+      Future<void> deliver() async {
+        if (!mounted ||
+            !_foreground ||
+            session != _listenSession ||
+            delivered) {
+          return;
+        }
+        delivered = true;
+        _completeRecognition = null;
+        _recognitionEnd?.cancel();
+        _handlingVoice = true;
+        setState(() => listening = false);
+        try {
+          await speech.cancel();
+          if (!mounted || !_foreground || session != _listenSession) return;
+          s.commandMicOpen = false;
+          _wakeListening = false;
+          if (_micHazardEpoch != s.hazardEpoch || lastWords.isEmpty) return;
+          final command = wake ? wakeCommand(lastWords) : lastWords;
+          if (command == null) return;
+          if (command.isEmpty) {
+            _handlingVoice = false;
+            // The recognizer can callback before listen() itself returns.
+            // Queue activation after setup has finished instead of losing it.
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted && session == _listenSession) unawaited(listen());
+            });
+            WidgetsBinding.instance.scheduleFrame();
+            return;
+          }
+          final intent = parseIntent(command);
+          if (intent.command == VoiceCommand.go) {
+            search.text = intent.destination!;
+            setState(() => tab = 0);
+          }
+          HapticFeedback.lightImpact();
+          await s.voiceGo(command);
+        } finally {
+          _handlingVoice = false;
+          if (mounted) {
+            setState(() {});
+            _finishNativeCommand();
+            _scheduleWake();
+          }
+        }
+      }
+
+      _completeRecognition = () => unawaited(deliver());
+      _recognitionEnd = Timer(const Duration(seconds: 23), () {
+        if (session == _listenSession) _completeRecognition?.call();
+      });
       await speech.listen(
         listenOptions: SpeechListenOptions(
           localeId: 'vi_VN',
+          partialResults: true,
           listenFor: const Duration(seconds: 20),
           pauseFor: const Duration(seconds: 3),
         ),
-        onResult: (r) async {
+        onResult: (r) {
           if (!mounted ||
               !_foreground ||
               session != _listenSession ||
-              delivered)
+              delivered) {
             return;
+          }
           setState(() => partial = r.recognizedWords);
-          if (!r.finalResult || r.recognizedWords.trim().isEmpty) return;
-          delivered = true;
-          _handlingVoice = true;
-          _retry?.cancel();
-          setState(() => listening = false);
-          try {
-            await speech.cancel();
-            if (!mounted || !_foreground || session != _listenSession) return;
-            final intent = parseIntent(r.recognizedWords);
-            search.text = intent.destination ?? r.recognizedWords;
-            HapticFeedback.lightImpact();
-            await s.voiceGo(r.recognizedWords);
-          } finally {
-            _handlingVoice = false;
-            if (mounted) {
-              setState(() {});
-              _scheduleListen();
-            }
+          if (r.recognizedWords.trim().isNotEmpty) {
+            lastWords = r.recognizedWords.trim();
+          }
+          // A complete wake phrase may be available only as partial text.
+          if (r.finalResult || (wake && wakeCommand(lastWords) == '')) {
+            unawaited(deliver());
           }
         },
       );
     } catch (_) {
-      _autoListen = false;
-      _retry?.cancel();
+      _recognitionEnd?.cancel();
+      s.commandMicOpen = false;
+      _foregroundWakeFailed = true;
+      await s.setWakeEnabled(false);
       s.error = 'Không mở được micro. Hãy kiểm tra quyền nhận dạng giọng nói.';
       await s.say(s.error!, urgent: true);
       if (mounted) setState(() => listening = false);
     } finally {
       _openingMic = false;
-      if (!listening) _scheduleListen();
+      _syncNativeVoice();
+      if (!listening) _scheduleWake();
     }
   }
 
@@ -287,8 +670,9 @@ class _HomeState extends State<Home>
       ),
     );
     input.dispose();
-    if (name != null && name.isNotEmpty)
+    if (name != null && name.isNotEmpty) {
       await s.perform(() => s.saveFavorite(name));
+    }
   }
 
   Future<void> shareText(String text) async {
@@ -327,24 +711,7 @@ class _HomeState extends State<Home>
                 style: const TextStyle(color: kTextSub),
               ),
               const SizedBox(height: 20),
-              FilledButton.icon(
-                icon: const Icon(Icons.call),
-                label: Text(
-                  s.emergencyPhone.isEmpty
-                      ? 'Chưa đặt số người thân'
-                      : 'Gọi ${s.emergencyPhone}',
-                ),
-                onPressed: s.emergencyPhone.isEmpty
-                    ? null
-                    : () => s.perform(() async {
-                        if (!await launchUrl(
-                          Uri(scheme: 'tel', path: s.emergencyPhone),
-                        )) {
-                          throw Exception('Không mở được ứng dụng gọi điện.');
-                        }
-                        s.log('sos_dialer', 'Đã mở giao diện gọi người thân');
-                      }),
-              ),
+              _SosCallPicker(state: s),
               const SizedBox(height: 10),
               OutlinedButton.icon(
                 icon: const Icon(Icons.share_location),
@@ -389,7 +756,7 @@ class _HomeState extends State<Home>
       extendBodyBehindAppBar: true,
       appBar: _buildAppBar(),
       body: Semantics(
-        label: 'Chạm đúp bất kỳ đâu để nói điểm đến',
+        label: 'Chạm đúp để nói điểm đến hoặc lệnh dẫn đường',
         child: GestureDetector(
           behavior: HitTestBehavior.translucent,
           // Double-tap anywhere opens the mic — no button to find.
@@ -397,7 +764,17 @@ class _HomeState extends State<Home>
           child: Stack(
             children: [
               _buildBody(isHazard),
-              if (listening)
+              if (s.pendingConfirm != null)
+                Positioned.fill(
+                  child: _ConfirmOverlay(
+                    place: s.pendingConfirm!,
+                    question: s.confirmPrompt ?? '',
+                    listening: listening,
+                    heard: partial,
+                    onAnswer: s.answerConfirm,
+                  ),
+                )
+              else if (listening && !_wakeListening)
                 Positioned.fill(
                   child: _ListeningOverlay(
                     text: partial,
@@ -418,6 +795,13 @@ class _HomeState extends State<Home>
         // Extend behind status bar.
         SizedBox(height: MediaQuery.of(context).padding.top + kToolbarHeight),
         // Banners.
+        if (!_android && _wakeListening && listening && _recognizerReady)
+          const AnimatedBanner(
+            text: 'Mic đang chờ “Hey Aurelia”',
+            color: Color(0xFF164E43),
+            icon: Icons.hearing,
+          ),
+        EmergencyBanner(state: s),
         if (s.demo)
           AnimatedBanner(
             text: 'CHẾ ĐỘ MÔ PHỎNG  •  Không dùng để đi ngoài đường',
@@ -501,6 +885,17 @@ class _HomeState extends State<Home>
       ],
     ),
     actions: [
+      IconButton(
+        key: const Key('command_mic'),
+        onPressed: () => listen(),
+        tooltip: listening && !_wakeListening
+            ? 'Dừng nghe'
+            : 'Nói lệnh với Aurelia',
+        icon: Icon(
+          listening && !_wakeListening ? Icons.mic : Icons.mic_none,
+          color: kAccent,
+        ),
+      ),
       IconButton(
         onPressed: sos,
         tooltip: 'Trợ giúp khẩn cấp',
@@ -637,7 +1032,9 @@ class _NavigatePage extends StatelessWidget {
               icon: Icons.my_location_rounded,
               text: s.freshFix
                   ? 'Vị trí chính xác ±${s.accuracy.round()} m'
-                  : 'Đang chờ vị trí',
+                  : s.location != null
+                  ? 'Vị trí gần đúng ±${s.accuracy.round()} m'
+                  : 'Đang lấy vị trí điện thoại',
               good: s.freshFix,
             ),
             StatusPill(
@@ -718,17 +1115,13 @@ class _SearchBar extends StatelessWidget {
                 color: kTextSub,
                 size: 20,
               ),
-              suffixIcon: AnimatedSwitcher(
-                duration: 250.ms,
-                child: IconButton(
-                  key: ValueKey(listening),
-                  onPressed: onListen,
-                  tooltip: listening ? 'Dừng nghe' : 'Tìm bằng giọng nói',
-                  icon: Icon(
-                    listening ? Icons.mic_rounded : Icons.mic_none_rounded,
-                    color: listening ? kDanger : kTextSub,
-                    size: 20,
-                  ),
+              suffixIcon: IconButton(
+                onPressed: onListen,
+                tooltip: listening ? 'Dừng nghe' : 'Tìm bằng giọng nói',
+                icon: Icon(
+                  listening ? Icons.mic_rounded : Icons.mic_none_rounded,
+                  color: listening ? kDanger : kTextSub,
+                  size: 20,
                 ),
               ),
             ),
@@ -804,13 +1197,28 @@ class _PlaceResult extends StatelessWidget {
               ),
               const SizedBox(width: 12),
               Expanded(
-                child: Text(
-                  place.name,
-                  style: const TextStyle(
-                    color: kText,
-                    fontSize: 14,
-                    height: 1.45,
-                  ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      place.name,
+                      style: const TextStyle(
+                        color: kText,
+                        fontSize: 14,
+                        height: 1.45,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    if (place.address.isNotEmpty)
+                      Text(
+                        place.address,
+                        style: const TextStyle(
+                          color: kTextSub,
+                          fontSize: 12,
+                          height: 1.4,
+                        ),
+                      ),
+                  ],
                 ),
               ),
               const SizedBox(width: 8),
@@ -991,9 +1399,9 @@ class _MapCard extends StatelessWidget {
                         ),
                         const SizedBox(width: 5),
                         Text(
-                          s.freshFix
-                              ? '±${s.accuracy.round()} m'
-                              : 'Chưa có GPS',
+                          s.location != null
+                              ? '±${s.accuracy.round()} m${s.freshFix ? '' : ' • gần đúng'}'
+                              : 'Chưa có vị trí',
                           style: const TextStyle(
                             fontSize: 11,
                             color: kText,
@@ -1390,7 +1798,7 @@ class _ActionButtons extends StatelessWidget {
               label: Text(
                 s.journey == JourneyState.paused
                     ? 'Tiếp tục hành trình'
-                    : 'Bắt đầu hành trình',
+                    : 'Bắt đầu với kính',
               ),
             ),
           ),
@@ -1984,7 +2392,8 @@ class _SettingsPage extends StatefulWidget {
 }
 
 class _SettingsPageState extends State<_SettingsPage> {
-  late final TextEditingController endpoint, token, apiKey, phone;
+  late final TextEditingController endpoint, token, apiKey;
+  final List<_ContactFields> contacts = [];
   bool saved = false;
   AppState get s => widget.state;
 
@@ -1994,7 +2403,9 @@ class _SettingsPageState extends State<_SettingsPage> {
     endpoint = TextEditingController(text: s.link.endpoint);
     token = TextEditingController(text: s.link.token);
     apiKey = TextEditingController(text: s.routing.key);
-    phone = TextEditingController(text: s.emergencyPhone);
+    for (final c in s.emergencyContacts) {
+      contacts.add(_ContactFields(c.name, c.phone));
+    }
   }
 
   @override
@@ -2002,8 +2413,64 @@ class _SettingsPageState extends State<_SettingsPage> {
     endpoint.dispose();
     token.dispose();
     apiKey.dispose();
-    phone.dispose();
+    for (final c in contacts) {
+      c.dispose();
+    }
     super.dispose();
+  }
+
+  Future<void> _importPairing({required bool camera}) async {
+    final raw = camera
+        ? await Navigator.of(context).push<String>(
+            MaterialPageRoute(builder: (_) => const PairingScanner()),
+          )
+        : (await Clipboard.getData(Clipboard.kTextPlain))?.text;
+    if (!mounted || raw == null) return;
+    PairingConfig config;
+    try {
+      config = PairingConfig.parse(raw);
+    } catch (_) {
+      await s.perform(() async {
+        throw const FormatException(
+          'Mã cấu hình không hợp lệ. Nhờ người hỗ trợ tạo lại QR SecondSight.',
+        );
+      });
+      return;
+    }
+    if (!mounted) return;
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Lưu cấu hình kính?'),
+        content: Text(
+          'Kính tại ${config.endpoint}\n${config.allowInsecure ? "Kết nối HTTP LAN thử nghiệm. " : ""}Token sẽ được lưu bảo mật.${config.routingKey == null ? " Giữ API key hiện tại." : " Có API key bản đồ."}',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Hủy'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Lưu cấu hình'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted || accepted != true) return;
+    await s.perform(() async {
+      s.link.disconnect();
+      s.link.endpoint = config.endpoint;
+      s.link.token = config.token;
+      s.link.allowInsecure = config.allowInsecure;
+      if (config.routingKey != null) s.routing.key = config.routingKey!;
+      await s.saveSettings();
+      endpoint.text = s.link.endpoint;
+      token.text = s.link.token;
+      apiKey.text = s.routing.key;
+      s.notice = 'Đã lưu cấu hình. Vào Kính để kết nối; những lần sau không cần nhập lại.';
+      setState(() => saved = true);
+    });
   }
 
   @override
@@ -2039,8 +2506,41 @@ class _SettingsPageState extends State<_SettingsPage> {
       ),
       const SizedBox(height: 16),
 
+      GlassCard(
+        child: SwitchListTile(
+          title: const Text('Gọi Aurelia trong hành trình'),
+          subtitle: const Text(
+            'Tự bật khi đang dẫn đường hoặc lệch tuyến. Android tiếp tục nghe khi app ở nền hoặc khóa màn hình, có thông báo mic. Dừng/tạm dừng hành trình sẽ tắt mic nền.',
+          ),
+          value: s.navigationWakeEnabled,
+          onChanged: (value) => s.setNavigationWakeEnabled(value),
+        ),
+      ),
+      const SizedBox(height: 16),
+      GlassCard(
+        child: SwitchListTile(
+          title: const Text('Gọi “Hey Aurelia” ngoài hành trình'),
+          subtitle: const Text(
+            'Android chờ “Hey Aurelia” bằng bộ nhận dạng cục bộ, không phát âm báo theo chu kỳ. Chỉ hoạt động khi app hiển thị ngoài hành trình; tự ngừng lúc app đọc hoặc có cảnh báo.',
+          ),
+          value: s.wakeEnabled,
+          onChanged: (value) => s.setWakeEnabled(value),
+        ),
+      ),
+      const SizedBox(height: 16),
       // ── Pi connection
       _Section('Kết nối kính'),
+      const SizedBox(height: 12),
+      FilledButton.icon(
+        onPressed: () => _importPairing(camera: true),
+        icon: const Icon(Icons.qr_code_scanner),
+        label: const Text('Quét QR cấu hình một lần'),
+      ),
+      TextButton.icon(
+        onPressed: () => _importPairing(camera: false),
+        icon: const Icon(Icons.content_paste),
+        label: const Text('Dán cấu hình từ người hỗ trợ'),
+      ),
       const SizedBox(height: 12),
       _Field(
         controller: endpoint,
@@ -2078,11 +2578,22 @@ class _SettingsPageState extends State<_SettingsPage> {
       const SizedBox(height: 12),
       _Field(controller: apiKey, label: 'GraphHopper API key', obscure: true),
       const SizedBox(height: 10),
-      _Field(
-        controller: phone,
-        label: 'Số điện thoại người thân',
-        hint: '+84…',
-        keyboard: TextInputType.phone,
+      _ContactsEditor(
+        contacts: contacts,
+        onAdd: () => setState(() => contacts.add(_ContactFields('', ''))),
+        onRemove: (c) => setState(() {
+          contacts.remove(c);
+          c.dispose();
+        }),
+      ),
+      const SizedBox(height: 8),
+      OutlinedButton.icon(
+        icon: const Icon(Icons.warning_amber_rounded, color: kDanger),
+        label: const Text(
+          'Thử nghiệm luồng khẩn cấp mất kính (Demo)',
+          style: TextStyle(color: kDanger, fontWeight: FontWeight.w600),
+        ),
+        onPressed: () => s.startLostConnectionEmergency(simulated: true),
       ),
       const SizedBox(height: 16),
 
@@ -2149,7 +2660,11 @@ class _SettingsPageState extends State<_SettingsPage> {
           s.link.endpoint = nextEndpoint;
           s.link.token = nextToken;
           s.routing.key = apiKey.text.trim();
-          s.emergencyPhone = phone.text.trim();
+          s.emergencyContacts = [
+            for (final c in contacts)
+              if (c.phone.text.trim().isNotEmpty)
+                EmergencyContact(c.name.text.trim(), c.phone.text.trim()),
+          ];
           await s.saveSettings();
           if (mounted) setState(() => saved = true);
         }),
@@ -2202,6 +2717,188 @@ class _Section extends StatelessWidget {
       letterSpacing: 0.3,
     ),
   );
+}
+
+// ─── Emergency contacts ──────────────────────────────────────────
+class _ContactFields {
+  final TextEditingController name, phone;
+  _ContactFields(String n, String p)
+    : name = TextEditingController(text: n),
+      phone = TextEditingController(text: p);
+  void dispose() {
+    name.dispose();
+    phone.dispose();
+  }
+}
+
+/// Collapsible list so any number of relatives stays compact in Settings.
+class _ContactsEditor extends StatelessWidget {
+  final List<_ContactFields> contacts;
+  final VoidCallback onAdd;
+  final ValueChanged<_ContactFields> onRemove;
+  const _ContactsEditor({
+    required this.contacts,
+    required this.onAdd,
+    required this.onRemove,
+  });
+
+  @override
+  Widget build(BuildContext context) => GlassCard(
+    child: Theme(
+      data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+      child: ExpansionTile(
+        tilePadding: EdgeInsets.zero,
+        childrenPadding: const EdgeInsets.only(bottom: 8),
+        leading: const Icon(Icons.contacts_rounded, color: kAccent),
+        title: const Text(
+          'Số điện thoại người thân',
+          style: TextStyle(
+            color: kText,
+            fontWeight: FontWeight.w600,
+            fontFamily: 'BeVietnamPro',
+          ),
+        ),
+        subtitle: Text(
+          contacts.isEmpty
+              ? 'Chưa có số nào — chạm để thêm'
+              : '${contacts.length} người · #1 là người giám hộ tự động gọi khi mất kính',
+          style: const TextStyle(
+            color: kTextSub,
+            fontSize: 12,
+            fontFamily: 'BeVietnamPro',
+          ),
+        ),
+        children: [
+          for (var i = 0; i < contacts.length; i++)
+            Padding(
+              key: ObjectKey(contacts[i]),
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Column(
+                    children: [
+                      TextField(
+                        controller: contacts[i].name,
+                        textCapitalization: TextCapitalization.words,
+                        style: const TextStyle(color: kText),
+                        decoration: InputDecoration(
+                          labelText: i == 0
+                              ? 'Tên người giám hộ ưu tiên #1'
+                              : 'Tên / ghi chú ${i + 1}',
+                          hintText: i == 0 ? 'VD: Mẹ' : 'VD: Anh Nam (hàng xóm)',
+                        ),
+                      ),
+                        const SizedBox(height: 6),
+                        TextField(
+                          controller: contacts[i].phone,
+                          keyboardType: TextInputType.phone,
+                          autocorrect: false,
+                          style: const TextStyle(color: kText),
+                          decoration: const InputDecoration(
+                            labelText: 'Số điện thoại',
+                            hintText: '+84…',
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: 'Xóa người thân',
+                    icon: const Icon(Icons.delete_outline, color: kTextSub),
+                    onPressed: () => onRemove(contacts[i]),
+                  ),
+                ],
+              ),
+            ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              onPressed: onAdd,
+              icon: const Icon(Icons.person_add_alt_1_rounded),
+              label: const Text('Thêm người thân'),
+            ),
+          ),
+          const Text(
+            'Nhấn “Lưu cài đặt” bên dưới để lưu danh sách.',
+            style: TextStyle(color: kTextSub, fontSize: 11),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+/// SOS: pick which relative to call from a dropdown, then open the dialer.
+class _SosCallPicker extends StatefulWidget {
+  final AppState state;
+  const _SosCallPicker({required this.state});
+  @override
+  State<_SosCallPicker> createState() => _SosCallPickerState();
+}
+
+class _SosCallPickerState extends State<_SosCallPicker> {
+  int selected = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = widget.state;
+    final list = s.emergencyContacts;
+    if (list.isEmpty) {
+      return const FilledButton(
+        onPressed: null,
+        child: Text('Chưa đặt số người thân (vào Cài đặt để thêm)'),
+      );
+    }
+    if (selected >= list.length) selected = 0;
+    final c = list[selected];
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        DropdownButtonFormField<int>(
+          initialValue: selected,
+          isExpanded: true,
+          decoration: const InputDecoration(labelText: 'Chọn người thân'),
+          dropdownColor: kSurface,
+          style: const TextStyle(
+            color: kText,
+            fontSize: 15,
+            fontFamily: 'BeVietnamPro',
+          ),
+          items: [
+            for (var i = 0; i < list.length; i++)
+              DropdownMenuItem(
+                value: i,
+                child: Text(
+                  list[i].name.trim().isEmpty
+                      ? list[i].phone
+                      : '${list[i].name.trim()} · ${list[i].phone}',
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontFamily: 'BeVietnamPro',
+                    color: kText,
+                    fontSize: 15,
+                  ),
+                ),
+              ),
+          ],
+          onChanged: (v) => setState(() => selected = v ?? 0),
+        ),
+        const SizedBox(height: 10),
+        FilledButton.icon(
+          icon: const Icon(Icons.call),
+          label: Text('Gọi ${c.label}', overflow: TextOverflow.ellipsis),
+          onPressed: () => s.perform(() async {
+            if (!await launchUrl(Uri(scheme: 'tel', path: c.phone))) {
+              throw Exception('Không mở được ứng dụng gọi điện.');
+            }
+            s.log('sos_dialer', 'Đã mở giao diện gọi người thân: ${c.label}');
+          }),
+        ),
+      ],
+    );
+  }
 }
 
 class _Field extends StatelessWidget {
@@ -2275,174 +2972,6 @@ class _SliderRow extends StatelessWidget {
   );
 }
 
-// ─── STM32 Calibration Row ────────────────────────────────────────
-class _Stm32CalibrationRow extends StatelessWidget {
-  final AppState state;
-  final bool good;
-  const _Stm32CalibrationRow({required this.state, required this.good});
-
-  @override
-  Widget build(BuildContext context) {
-    final s = state;
-    final calibrated = good && s.status['stm32_calibrated'] == true;
-    final color = calibrated ? kAccent : kWarning;
-    return Row(
-      children: [
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-          decoration: BoxDecoration(
-            color: color.withValues(alpha: 0.12),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: color.withValues(alpha: 0.35)),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                calibrated
-                    ? Icons.check_circle_rounded
-                    : Icons.warning_amber_rounded,
-                color: color,
-                size: 13,
-              ),
-              const SizedBox(width: 5),
-              Text(
-                calibrated ? 'Đã hiệu chuẩn' : 'Chưa hiệu chuẩn',
-                style: TextStyle(
-                  fontSize: 11,
-                  color: color,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Text(
-            calibrated
-                ? 'Madgwick/Mahony sẵn sàng — heading đang xác nhận rẽ'
-                : 'Cảnh báo vật cản bằng camera vẫn hoạt động bình thường',
-            style: const TextStyle(fontSize: 11, color: kTextSub, height: 1.35),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-// ─── STM32 Heading Card ───────────────────────────────────────────
-class _Stm32HeadingCard extends StatelessWidget {
-  final AppState state;
-  const _Stm32HeadingCard({required this.state});
-
-  String _fmt(String key, [String suffix = '']) {
-    final v = state.status[key];
-    if (v is num) return '${v.toStringAsFixed(1)}$suffix';
-    return '—';
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final s = state;
-    final calibrated = s.status['stm32_calibrated'] == true;
-    return GlassCard(
-      padding: const EdgeInsets.all(16),
-      borderColor: calibrated
-          ? kAccent.withValues(alpha: 0.25)
-          : kWarning.withValues(alpha: 0.25),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(
-                Icons.developer_board_rounded,
-                color: calibrated ? kAccent : kWarning,
-                size: 16,
-              ),
-              const SizedBox(width: 8),
-              Text(
-                'STM32F411E-DISCO  •  Madgwick / Mahony',
-                style: TextStyle(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                  color: calibrated ? kAccent : kWarning,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Row(
-            children: [
-              _ImuCell(label: 'Heading', value: _fmt('stm32_heading', '°')),
-              _ImuCell(label: 'Pitch', value: _fmt('stm32_pitch', '°')),
-              _ImuCell(label: 'Roll', value: _fmt('stm32_roll', '°')),
-            ],
-          ),
-          if (s.active && calibrated) ...[
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                const Icon(
-                  Icons.arrow_forward_rounded,
-                  color: kAccent,
-                  size: 14,
-                ),
-                const SizedBox(width: 6),
-                Text(
-                  'Target ${s.targetBearing.toStringAsFixed(1)}°  •  '
-                  'STM32 ${_fmt('stm32_heading', '°')}  •  '
-                  'Δ ${(s.targetBearing - (s.status['stm32_heading'] is num ? (s.status['stm32_heading'] as num).toDouble() : s.targetBearing)).abs().toStringAsFixed(1)}°',
-                  style: const TextStyle(fontSize: 11, color: kTextSub),
-                ),
-              ],
-            ),
-          ],
-          if (!calibrated) ...[
-            const SizedBox(height: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                color: kWarning.withValues(alpha: 0.08),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: kWarning.withValues(alpha: 0.2)),
-              ),
-              child: const Text(
-                'STM32 chưa hiệu chuẩn hoặc mất kết nối — xác nhận hướng rẽ tạm dừng. '
-                'Camera và cảm biến vẫn cảnh báo vật cản bình thường.',
-                style: TextStyle(fontSize: 11, color: kWarning, height: 1.4),
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-class _ImuCell extends StatelessWidget {
-  final String label, value;
-  const _ImuCell({required this.label, required this.value});
-  @override
-  Widget build(BuildContext context) => Expanded(
-    child: Column(
-      children: [
-        Text(
-          value,
-          style: const TextStyle(
-            fontSize: 18,
-            fontWeight: FontWeight.w800,
-            color: kText,
-          ),
-        ),
-        const SizedBox(height: 2),
-        Text(label, style: const TextStyle(fontSize: 10, color: kTextSub)),
-      ],
-    ),
-  );
-}
-
 // ─── Hands-free listening overlay (Siri-style orb) ───────────────
 class _ListeningOverlay extends StatelessWidget {
   final String text;
@@ -2453,7 +2982,7 @@ class _ListeningOverlay extends StatelessWidget {
   Widget build(BuildContext context) {
     return Semantics(
       liveRegion: true,
-      label: 'Đang nghe. Hãy nói điểm đến. Chạm để huỷ.',
+      label: 'Đang nghe. Hãy nói điểm đến hoặc lệnh dẫn đường. Chạm để hủy.',
       child: GestureDetector(
         onTap: onCancel,
         child: ClipRect(
@@ -2568,6 +3097,256 @@ class _ListeningOverlay extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _ConfirmOverlay extends StatelessWidget {
+  final Place place;
+  final String question, heard;
+  final bool listening;
+  final void Function(YesNo) onAnswer;
+  const _ConfirmOverlay({
+    required this.place,
+    required this.question,
+    required this.listening,
+    required this.heard,
+    required this.onAnswer,
+  });
+
+  @override
+  Widget build(BuildContext context) => Material(
+    color: kBg.withValues(alpha: .96),
+    child: SafeArea(
+      child: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                listening ? Icons.mic : Icons.record_voice_over,
+                size: 56,
+                color: kAccent,
+              ),
+              const SizedBox(height: 24),
+              Semantics(
+                liveRegion: true,
+                child: Text(
+                  question,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.w700,
+                    color: kText,
+                  ),
+                ),
+              ),
+              if (heard.isNotEmpty) ...[
+                const SizedBox(height: 16),
+                Text(
+                  heard,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: kTextSub),
+                ),
+              ],
+              const SizedBox(height: 24),
+              const Text(
+                'Nói có, không hoặc hủy. Bạn cũng có thể dùng các nút bên dưới.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: kTextSub),
+              ),
+              const SizedBox(height: 20),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton(
+                  onPressed: () => onAnswer(YesNo.yes),
+                  child: const Text('Có'),
+                ),
+              ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton(
+                  onPressed: () => onAnswer(YesNo.no),
+                  child: const Text('Không'),
+                ),
+              ),
+              TextButton(
+                onPressed: () => onAnswer(YesNo.cancel),
+                child: const Text('Hủy'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
+  );
+}
+
+class EmergencyBanner extends StatelessWidget {
+  final AppState state;
+  const EmergencyBanner({super.key, required this.state});
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: state,
+      builder: (context, _) {
+        final phase = state.emergencyPhase;
+        if (phase == EmergencyPhase.none || phase == EmergencyPhase.cancelled) {
+          return const SizedBox.shrink();
+        }
+
+    final isCountdown = phase == EmergencyPhase.countdown;
+    final isActionTaken = phase == EmergencyPhase.actionTaken;
+    final isReconnecting = phase == EmergencyPhase.reconnecting;
+
+    final bgColor = isCountdown
+        ? const Color(0xFF881337)
+        : (isActionTaken ? const Color(0xFF78350F) : const Color(0xFF7F1D1D));
+
+    final borderColor = isCountdown
+        ? const Color(0xFFF43F5E)
+        : (isActionTaken ? kWarning : const Color(0xFFEF4444));
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: borderColor, width: 2),
+        boxShadow: [
+          BoxShadow(
+            color: borderColor.withValues(alpha: isCountdown ? 0.6 : 0.3),
+            blurRadius: isCountdown ? 20 : 10,
+            spreadRadius: isCountdown ? 2 : 0,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.15),
+                  shape: BoxShape.circle,
+                ),
+                child: Center(
+                  child: isCountdown
+                      ? Text(
+                          '${state.emergencyCountdown}',
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 22,
+                            fontWeight: FontWeight.w900,
+                            fontFamily: 'BeVietnamPro',
+                          ),
+                        )
+                      : Icon(
+                          isActionTaken
+                              ? Icons.check_circle_outline_rounded
+                              : Icons.sensors_off_rounded,
+                          color: Colors.white,
+                          size: 26,
+                        ),
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      isCountdown
+                          ? 'KHẨN CẤP: KÍNH MẤT KẾT NỐI'
+                          : isActionTaken
+                              ? 'ĐÃ GỬI VỊ TRÍ & QUAY SỐ'
+                              : 'MẤT KẾT NỐI VỚI KÍNH',
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 15,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 0.5,
+                        fontFamily: 'BeVietnamPro',
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      isCountdown
+                          ? 'Tự động gửi SMS tọa độ và gọi người giám hộ sau ${state.emergencyCountdown}s. Nói "HỦY" nếu bạn an toàn!'
+                          : isActionTaken
+                              ? 'Đã phát cảnh báo SMS kèm GPS tới người thân và gọi người giám hộ ưu tiên.'
+                              : 'Đang thử kết nối lại lần ${state.emergencyRetryCount}/5... Xin bạn đứng yên tại vị trí an toàn.',
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.92),
+                        fontSize: 12.5,
+                        height: 1.3,
+                        fontFamily: 'BeVietnamPro',
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              if (isCountdown || isReconnecting) ...[
+                OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.white,
+                    side: const BorderSide(color: Colors.white, width: 1.5),
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  icon: const Icon(Icons.cancel_outlined, size: 18),
+                  label: Text(
+                    isCountdown ? 'HỦY KHẨN CẤP (TÔI ỔN)' : 'Hủy thử lại',
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w700,
+                      fontSize: 13,
+                      fontFamily: 'BeVietnamPro',
+                    ),
+                  ),
+                  onPressed: () => state.cancelEmergency(),
+                ),
+              ] else if (isActionTaken) ...[
+                TextButton.icon(
+                  style: TextButton.styleFrom(
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                  ),
+                  icon: const Icon(Icons.close_rounded, size: 18),
+                  label: const Text(
+                    'Đóng thông báo',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 13,
+                      fontFamily: 'BeVietnamPro',
+                    ),
+                  ),
+                  onPressed: () => state.dismissEmergencyBanner(),
+                ),
+              ],
+            ],
+          ),
+        ],
+      ),
+    );
+      },
     );
   }
 }

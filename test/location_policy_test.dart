@@ -17,10 +17,10 @@ void main() {
         speed: 1,
         speedAccuracy: 1,
       );
-  test('all fixes including cold start enforce accuracy and timestamp', () {
+  test('display accepts coarse fixes but rejects invalid or stale samples', () {
     expect(acceptsPosition(fix(accuracy: 20), now), isTrue);
+    expect(acceptsPosition(fix(accuracy: 75), now), isTrue);
     for (final p in [
-      fix(accuracy: 20.01),
       fix(accuracy: -1),
       fix(accuracy: double.nan),
       fix(age: 9),
@@ -32,16 +32,13 @@ void main() {
     expect(acceptsPosition(fix(), now, previous: now), isFalse);
     expect(acceptsPosition(fix(age: 1), now, previous: now), isFalse);
   });
-  test(
-    'navigation uses FLP high priority, idle uses balanced without wakelock',
-    () {
-      final active = locationSettingsFor(true) as AndroidSettings;
-      final idle = locationSettingsFor(false) as AndroidSettings;
-      expect(active.accuracy, LocationAccuracy.bestForNavigation);
-      expect(idle.accuracy, LocationAccuracy.medium);
-      expect(active.forceLocationManager, isFalse);
-      expect(active.foregroundNotificationConfig, isNotNull);
-      expect(idle.foregroundNotificationConfig, isNull);
-    },
-  );
+  test('navigation uses FLP high priority, idle requests accurate position without wakelock', () {
+    final active = locationSettingsFor(true) as AndroidSettings;
+    final idle = locationSettingsFor(false) as AndroidSettings;
+    expect(active.accuracy, LocationAccuracy.bestForNavigation);
+    expect(idle.accuracy, LocationAccuracy.high);
+    expect(active.forceLocationManager, isFalse);
+    expect(active.foregroundNotificationConfig, isNotNull);
+    expect(idle.foregroundNotificationConfig, isNull);
+  });
 }
