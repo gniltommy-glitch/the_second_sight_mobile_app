@@ -23,13 +23,7 @@ import '../services/speech_output.dart';
 // ────────────────────────────────────────────────────────────────
 //  Emergency State Machine
 // ────────────────────────────────────────────────────────────────
-enum EmergencyPhase {
-  none,
-  reconnecting,
-  countdown,
-  actionTaken,
-  cancelled,
-}
+enum EmergencyPhase { none, reconnecting, countdown, actionTaken, cancelled }
 
 // ────────────────────────────────────────────────────────────────
 //  Navigation State Machine
@@ -381,9 +375,14 @@ class AppState extends ChangeNotifier {
         syncPending = true;
         log('connection_lost', 'Mất kết nối kính; chỉ dẫn trên kính tạm dừng.');
         final isNavigatingAndNotArrived =
-            (active || offRoute || journey == JourneyState.navigating || journey == JourneyState.paused) &&
+            (active ||
+                offRoute ||
+                journey == JourneyState.navigating ||
+                journey == JourneyState.paused) &&
             journey != JourneyState.arrived;
-        if (!demo && isNavigatingAndNotArrived && emergencyPhase == EmergencyPhase.none) {
+        if (!demo &&
+            isNavigatingAndNotArrived &&
+            emergencyPhase == EmergencyPhase.none) {
           unawaited(startLostConnectionEmergency());
         } else {
           unawaited(say('Mất kết nối kính. Chỉ dẫn trên kính đang tạm dừng.'));
@@ -417,6 +416,23 @@ class AppState extends ChangeNotifier {
       return;
     }
     await _speechOutput.say(text, urgent: urgent);
+  }
+
+  Future<void> cancelExploration() => _speechOutput.cancelExploration();
+
+  /// Touch feedback is lower priority than navigation, hazards and the mic.
+  Future<void> exploreText(String text) async {
+    if (!speechReady ||
+        piAudioBlocked ||
+        phoneSpeechBlocked ||
+        commandMicOpen ||
+        _voiceBusy ||
+        pendingConfirm != null ||
+        emergencyPhase == EmergencyPhase.countdown ||
+        emergencyPhase == EmergencyPhase.reconnecting) {
+      return;
+    }
+    await _speechOutput.explore(text);
   }
 
   void log(String type, String text) {
@@ -1560,13 +1576,15 @@ class AppState extends ChangeNotifier {
     String displayName = '';
 
     final digitsOnly = query?.replaceAll(RegExp(r'\D'), '') ?? '';
-    final isEmergencyNumber = query != null &&
+    final isEmergencyNumber =
+        query != null &&
         (query.startsWith(RegExp(r'11[345]')) ||
             query.startsWith('911') ||
             (digitsOnly.length >= 3 &&
                 digitsOnly.length <= 5 &&
                 !query.contains(RegExp(r'[a-zA-Zà-ỹÀ-Ỹ]'))) ||
-            (digitsOnly.length >= 9 && !query.contains(RegExp(r'[a-zA-Zà-ỹÀ-Ỹ]'))));
+            (digitsOnly.length >= 9 &&
+                !query.contains(RegExp(r'[a-zA-Zà-ỹÀ-Ỹ]'))));
 
     if (isEmergencyNumber) {
       phoneToCall = query;
@@ -1582,7 +1600,9 @@ class AppState extends ChangeNotifier {
         );
         return;
       } else {
-        await say('Chưa có số người thân nào được cài đặt trong danh sách khẩn cấp.');
+        await say(
+          'Chưa có số người thân nào được cài đặt trong danh sách khẩn cấp.',
+        );
         return;
       }
     }
@@ -1603,7 +1623,9 @@ class AppState extends ChangeNotifier {
       log('call_initiated', 'Gọi điện tới $displayName ($phoneToCall)');
     } catch (e) {
       log('call_error', 'Lỗi khi gọi tới $displayName: $e');
-      await say('Không thể thực hiện cuộc gọi. Vui lòng kiểm tra lại quyền điện thoại.');
+      await say(
+        'Không thể thực hiện cuộc gọi. Vui lòng kiểm tra lại quyền điện thoại.',
+      );
     }
   }
 
@@ -1618,7 +1640,8 @@ class AppState extends ChangeNotifier {
     final shareText = 'Vị trí hiện tại của tôi: $mapsUrl';
 
     final query = recipientName?.trim();
-    final isShareAll = query == null ||
+    final isShareAll =
+        query == null ||
         query.isEmpty ||
         fold(query).contains('tat ca') ||
         fold(query).contains('moi nguoi') ||
@@ -1627,7 +1650,9 @@ class AppState extends ChangeNotifier {
     if (!isShareAll) {
       final contact = matchEmergencyContact(query);
       if (contact != null) {
-        await say('Đang gửi vị trí cho ${contact.name.isNotEmpty ? contact.name : contact.phone}.');
+        await say(
+          'Đang gửi vị trí cho ${contact.name.isNotEmpty ? contact.name : contact.phone}.',
+        );
         final smsUri = Uri(
           scheme: 'sms',
           path: contact.phone,
@@ -1639,7 +1664,10 @@ class AppState extends ChangeNotifier {
           } else {
             await launchUrl(smsUri);
           }
-          log('share_location_sms', 'Gửi vị trí SMS tới ${contact.name} (${contact.phone})');
+          log(
+            'share_location_sms',
+            'Gửi vị trí SMS tới ${contact.name} (${contact.phone})',
+          );
           return;
         } catch (e) {
           log('share_location_error', 'Lỗi gửi SMS tới ${contact.name}: $e');
@@ -1647,19 +1675,18 @@ class AppState extends ChangeNotifier {
       }
     }
 
-    await say(isShareAll
-        ? 'Đang chia sẻ vị trí hiện tại tới người thân.'
-        : 'Đang mở chia sẻ vị trí cho $query.');
+    await say(
+      isShareAll
+          ? 'Đang chia sẻ vị trí hiện tại tới người thân.'
+          : 'Đang mở chia sẻ vị trí cho $query.',
+    );
 
     try {
       if (shareOverride != null) {
         await shareOverride!(shareText);
       } else {
         await SharePlus.instance.share(
-          ShareParams(
-            text: shareText,
-            subject: 'Vị trí của tôi - SecondSight',
-          ),
+          ShareParams(text: shareText, subject: 'Vị trí của tôi - SecondSight'),
         );
       }
       log('share_location', 'Chia sẻ vị trí $lat, $lng');
@@ -1679,14 +1706,19 @@ class AppState extends ChangeNotifier {
     _emergencyDispatched = false;
     notifyListeners();
 
-    log('emergency_started', 'Mất kết nối kính trong khi đang dẫn đường. Bắt đầu thử kết nối lại.');
+    log(
+      'emergency_started',
+      'Mất kết nối kính trong khi đang dẫn đường. Bắt đầu thử kết nối lại.',
+    );
     await say(
       'Đã mất kết nối với kính. Xin hãy đứng yên tại chỗ để nhanh chóng thiết lập lại kết nối.',
       urgent: true,
     );
 
     _reconnectLoopTimer?.cancel();
-    _reconnectLoopTimer = Timer.periodic(const Duration(milliseconds: 2500), (t) async {
+    _reconnectLoopTimer = Timer.periodic(const Duration(milliseconds: 2500), (
+      t,
+    ) async {
       if (_disposed || emergencyPhase != EmergencyPhase.reconnecting) {
         t.cancel();
         return;
@@ -1716,7 +1748,10 @@ class AppState extends ChangeNotifier {
     emergencyPhase = EmergencyPhase.none;
     emergencyRetryCount = 0;
     notifyListeners();
-    log('emergency_reconnected', 'Đã kết nối lại kính thành công. Tiếp tục dẫn đường.');
+    log(
+      'emergency_reconnected',
+      'Đã kết nối lại kính thành công. Tiếp tục dẫn đường.',
+    );
     await say('Đã kết nối lại với kính. Bạn có thể tiếp tục hành trình.');
   }
 
@@ -1728,7 +1763,10 @@ class AppState extends ChangeNotifier {
     if (vibration) {
       HapticFeedback.heavyImpact();
     }
-    log('emergency_countdown', 'Thử kết nối 5 lần thất bại. Đếm ngược 10 giây khẩn cấp.');
+    log(
+      'emergency_countdown',
+      'Thử kết nối 5 lần thất bại. Đếm ngược 10 giây khẩn cấp.',
+    );
     await say(
       'Kính đã hoàn toàn mất kết nối. Xin bạn hãy ở yên chỗ đang đứng, tìm một vị trí an toàn để đứng. '
       'Hệ thống sẽ tự động gửi vị trí khẩn cấp và gọi người giám hộ sau 10 giây. Hãy nói HỦY nếu bạn an toàn.',
@@ -1736,7 +1774,9 @@ class AppState extends ChangeNotifier {
     );
 
     _emergencyCountdownTimer?.cancel();
-    _emergencyCountdownTimer = Timer.periodic(const Duration(seconds: 1), (t) async {
+    _emergencyCountdownTimer = Timer.periodic(const Duration(seconds: 1), (
+      t,
+    ) async {
       if (_disposed || emergencyPhase != EmergencyPhase.countdown) {
         t.cancel();
         return;
@@ -1768,12 +1808,18 @@ class AppState extends ChangeNotifier {
     _emergencyDispatched = true;
     notifyListeners();
 
-    log('emergency_automated_actions', 'Hết thời gian đếm ngược. Tự động gửi SMS vị trí và gọi người giám hộ ưu tiên số 1.');
+    log(
+      'emergency_automated_actions',
+      'Hết thời gian đếm ngược. Tự động gửi SMS vị trí và gọi người giám hộ ưu tiên số 1.',
+    );
 
     final lat = location?.latitude.toStringAsFixed(6);
     final lng = location?.longitude.toStringAsFixed(6);
-    final mapLink = lat != null ? 'https://maps.google.com/?q=$lat,$lng' : 'GPS chưa xác định';
-    final sosText = 'SOS KHẨN CẤP! Thiết bị SecondSight của tôi mất kết nối khi đang di chuyển. Vị trí hiện tại: $mapLink';
+    final mapLink = lat != null
+        ? 'https://maps.google.com/?q=$lat,$lng'
+        : 'GPS chưa xác định';
+    final sosText =
+        'SOS KHẨN CẤP! Thiết bị SecondSight của tôi mất kết nối khi đang di chuyển. Vị trí hiện tại: $mapLink';
 
     // 1. Send SMS to all ICE contacts
     if (emergencyContacts.isNotEmpty) {
@@ -1793,7 +1839,10 @@ class AppState extends ChangeNotifier {
           } else {
             await launchUrl(smsUri);
           }
-          log('emergency_sms_sent', 'Đã bắn tin nhắn SMS khẩn cấp tới $phoneNumbers');
+          log(
+            'emergency_sms_sent',
+            'Đã bắn tin nhắn SMS khẩn cấp tới $phoneNumbers',
+          );
         } catch (e) {
           log('emergency_sms_error', 'Lỗi gửi SMS khẩn cấp: $e');
           try {
@@ -1804,11 +1853,16 @@ class AppState extends ChangeNotifier {
         }
       }
     } else {
-      log('emergency_warning', 'Danh sách người giám hộ ICE trống, không thể gửi SMS.');
+      log(
+        'emergency_warning',
+        'Danh sách người giám hộ ICE trống, không thể gửi SMS.',
+      );
     }
 
     // 2. Call Primary Guardian (Priority #1)
-    final primary = emergencyContacts.isNotEmpty ? emergencyContacts.first : null;
+    final primary = emergencyContacts.isNotEmpty
+        ? emergencyContacts.first
+        : null;
     if (primary != null && primary.phone.trim().isNotEmpty) {
       await say(
         'Đã gửi vị trí khẩn cấp. Đang tự động gọi cho người giám hộ ${primary.name.isNotEmpty ? primary.name : "số 1"}.',
@@ -1821,13 +1875,18 @@ class AppState extends ChangeNotifier {
         } else {
           await launchUrl(telUri);
         }
-        log('emergency_call_primary', 'Tự động quay số cho ${primary.name} (${primary.phone})');
+        log(
+          'emergency_call_primary',
+          'Tự động quay số cho ${primary.name} (${primary.phone})',
+        );
       } catch (e) {
         log('emergency_call_error', 'Lỗi quay số cho người giám hộ: $e');
         await say('Không thể tự động quay số. Xin hãy gọi khẩn cấp bằng tay.');
       }
     } else {
-      await say('Đã gửi vị trí khẩn cấp. Không có số người giám hộ ưu tiên để gọi.');
+      await say(
+        'Đã gửi vị trí khẩn cấp. Không có số người giám hộ ưu tiên để gọi.',
+      );
     }
   }
 

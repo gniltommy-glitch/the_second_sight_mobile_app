@@ -3,8 +3,10 @@ import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'core/app_state.dart';
+import 'services/android_accessibility.dart';
 import 'ui/home.dart';
 import 'ui/landing_page.dart';
+import 'ui/widgets/touch_explorer.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -26,17 +28,16 @@ void main() {
 }
 
 // ─── Design tokens (premium dark — reactbits-inspired) ──────────
-const kBg      = Color(0xFF0D1117);  // GitHub-dark depth
-const kSurface = Color(0xFF161B22);  // Card surface
-const kCard2   = Color(0xFF1C2430);  // Secondary card
-const kAccent  = Color(0xFF22D3A5);  // Vivid teal — primary CTA
-const kAccent2 = Color(0xFF818CF8);  // Indigo — secondary
-const kDanger  = Color(0xFFFF5370);  // Coral red
-const kWarning = Color(0xFFF59E0B);  // Amber
-const kText    = Color(0xFFE6EDF3);  // Near-white
-const kTextSub = Color(0xFF8B949E);  // Muted gray
-const kBorder  = Color(0xFF21262D);  // Subtle border
-
+const kBg = Color(0xFF0D1117); // GitHub-dark depth
+const kSurface = Color(0xFF161B22); // Card surface
+const kCard2 = Color(0xFF1C2430); // Secondary card
+const kAccent = Color(0xFF22D3A5); // Vivid teal — primary CTA
+const kAccent2 = Color(0xFF818CF8); // Indigo — secondary
+const kDanger = Color(0xFFFF5370); // Coral red
+const kWarning = Color(0xFFF59E0B); // Amber
+const kText = Color(0xFFE6EDF3); // Near-white
+const kTextSub = Color(0xFF8B949E); // Muted gray
+const kBorder = Color(0xFF21262D); // Subtle border
 
 class SecondSightApp extends StatefulWidget {
   const SecondSightApp({super.key});
@@ -46,15 +47,18 @@ class SecondSightApp extends StatefulWidget {
 
 class _SecondSightAppState extends State<SecondSightApp> {
   final state = AppState();
+  final accessibility = AndroidAccessibility();
 
   @override
   void initState() {
     super.initState();
+    accessibility.start();
     state.init().catchError((Object e) => state.startupFailed(e));
   }
 
   @override
   void dispose() {
+    accessibility.dispose();
     state.dispose();
     super.dispose();
   }
@@ -111,6 +115,18 @@ class _SecondSightAppState extends State<SecondSightApp> {
 
     return MaterialApp(
       title: 'SecondSight',
+      builder: (context, child) => ListenableBuilder(
+        listenable: accessibility,
+        builder: (context, _) => AndroidAccessibilityScope(
+          service: accessibility,
+          child: TouchExplorer(
+            onRead: state.exploreText,
+            systemReaderActive: accessibility.systemReaderActive,
+            onSystemReaderActivated: state.cancelExploration,
+            child: child ?? const SizedBox.shrink(),
+          ),
+        ),
+      ),
       debugShowCheckedModeBanner: false,
       locale: const Locale('vi'),
       supportedLocales: const [Locale('vi'), Locale('en')],
@@ -151,9 +167,9 @@ class _SecondSightAppState extends State<SecondSightApp> {
           indicatorColor: kAccent.withValues(alpha: 0.18),
           iconTheme: WidgetStateProperty.resolveWith((states) {
             if (states.contains(WidgetState.selected)) {
-              return const IconThemeData(color: kAccent, size: 22);
+              return const IconThemeData(color: kAccent, size: 28);
             }
-            return const IconThemeData(color: kTextSub, size: 22);
+            return const IconThemeData(color: kTextSub, size: 28);
           }),
           labelTextStyle: WidgetStateProperty.resolveWith((states) {
             final selected = states.contains(WidgetState.selected);
@@ -165,7 +181,7 @@ class _SecondSightAppState extends State<SecondSightApp> {
           }),
           overlayColor: WidgetStateProperty.all(Colors.transparent),
           elevation: 0,
-          height: 70,
+          height: 84,
         ),
         inputDecorationTheme: InputDecorationTheme(
           filled: true,
@@ -192,8 +208,8 @@ class _SecondSightAppState extends State<SecondSightApp> {
           style: FilledButton.styleFrom(
             backgroundColor: kAccent,
             foregroundColor: const Color(0xFF001A14),
-            textStyle: base.copyWith(fontSize: 14, fontWeight: FontWeight.w700),
-            minimumSize: const Size(48, 50),
+            textStyle: base.copyWith(fontSize: 17, fontWeight: FontWeight.w700),
+            minimumSize: const Size(64, 64),
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(14),
             ),
@@ -204,8 +220,8 @@ class _SecondSightAppState extends State<SecondSightApp> {
           style: OutlinedButton.styleFrom(
             foregroundColor: kAccent,
             side: const BorderSide(color: kAccent, width: 1),
-            textStyle: base.copyWith(fontSize: 14, fontWeight: FontWeight.w600),
-            minimumSize: const Size(48, 50),
+            textStyle: base.copyWith(fontSize: 17, fontWeight: FontWeight.w600),
+            minimumSize: const Size(64, 64),
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(14),
             ),
@@ -214,7 +230,8 @@ class _SecondSightAppState extends State<SecondSightApp> {
         textButtonTheme: TextButtonThemeData(
           style: TextButton.styleFrom(
             foregroundColor: kAccent,
-            textStyle: base.copyWith(fontSize: 13, fontWeight: FontWeight.w600),
+            minimumSize: const Size(64, 60),
+            textStyle: base.copyWith(fontSize: 16, fontWeight: FontWeight.w600),
           ),
         ),
         chipTheme: ChipThemeData(

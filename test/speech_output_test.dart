@@ -76,4 +76,89 @@ void main() {
     await output.say('greeting');
     expect(errors, hasLength(1));
   });
+  test('touch speech replaces stale labels and yields to directions', () async {
+    final spoken = <String>[];
+    Completer<int>? playing;
+    final output = SpeechOutput(
+      speak: (text) {
+        spoken.add(text);
+        playing = Completer<int>();
+        return playing!.future;
+      },
+      stop: () async {
+        if (playing != null && !playing!.isCompleted) playing!.complete(0);
+        return 1;
+      },
+      onError: (e) => fail('$e'),
+    );
+    final first = output.explore('Nút tìm kiếm');
+    await Future<void>.delayed(Duration.zero);
+    final second = output.explore('Vị trí của tôi');
+    await Future<void>.delayed(Duration.zero);
+    expect(spoken, ['Nút tìm kiếm', 'Vị trí của tôi']);
+    final direction = output.say('Rẽ phải');
+    await Future<void>.delayed(Duration.zero);
+    await output.explore('Không được chen vào');
+    expect(spoken, ['Nút tìm kiếm', 'Vị trí của tôi', 'Rẽ phải']);
+    playing!.complete(1);
+    await Future.wait([first, second, direction]);
+    output.dispose();
+  });
+
+  test(
+    'rapid touch changes keep only the latest label while stop awaits',
+    () async {
+      final stopped = Completer<int>();
+      final firstDone = Completer<int>();
+      final spoken = <String>[];
+      final output = SpeechOutput(
+        speak: (text) async {
+          spoken.add(text);
+          return text == 'first' ? firstDone.future : 1;
+        },
+        stop: () => stopped.future,
+        onError: (e) => fail('$e'),
+      );
+      final first = output.explore('first');
+      await Future<void>.delayed(Duration.zero);
+      final stale = output.explore('stale');
+      final latest = output.explore('latest');
+      firstDone.complete(0);
+      stopped.complete(1);
+      await Future.wait([first, stale, latest]);
+      expect(spoken, ['first', 'latest']);
+      output.dispose();
+    },
+  );
+  test(
+    'screen reader takeover stops only exploration, never navigation speech',
+    () async {
+      var stops = 0;
+      Completer<int>? playing;
+      final output = SpeechOutput(
+        speak: (_) {
+          playing = Completer<int>();
+          return playing!.future;
+        },
+        stop: () async {
+          stops++;
+          if (playing != null && !playing!.isCompleted) playing!.complete(0);
+          return 1;
+        },
+        onError: (e) => fail('$e'),
+      );
+      final exploration = output.explore('Nhãn nút');
+      await Future<void>.delayed(Duration.zero);
+      await output.cancelExploration();
+      await exploration;
+      expect(stops, 1);
+      final direction = output.say('Đi thẳng');
+      await Future<void>.delayed(Duration.zero);
+      await output.cancelExploration();
+      expect(stops, 1);
+      playing!.complete(1);
+      await direction;
+      output.dispose();
+    },
+  );
 }

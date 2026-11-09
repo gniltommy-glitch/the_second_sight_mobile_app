@@ -168,13 +168,14 @@ class JourneyWelcome extends StatelessWidget {
                 ],
               ),
             ),
-            ExcludeSemantics(
-              child: SizedBox(
-                width: MediaQuery.sizeOf(context).width < 360 ? 66 : 100,
-                height: 120,
-                child: CustomPaint(painter: _WayfinderArt()),
+            if (MediaQuery.textScalerOf(context).scale(30) <= 36)
+              ExcludeSemantics(
+                child: SizedBox(
+                  width: MediaQuery.sizeOf(context).width < 360 ? 66 : 100,
+                  height: 120,
+                  child: CustomPaint(painter: _WayfinderArt()),
+                ),
               ),
-            ),
           ],
         ),
         const SizedBox(height: 18),
@@ -199,11 +200,12 @@ class JourneyWelcome extends StatelessWidget {
               ),
             ),
             TextButton(
+              style: TextButton.styleFrom(minimumSize: const Size(64, 60)),
               onPressed: onDevice,
               child: Text(
                 connected ? 'Xem kính' : 'Kết nối',
                 style: const TextStyle(
-                  fontSize: 12,
+                  fontSize: 16,
                   fontWeight: FontWeight.w700,
                 ),
               ),

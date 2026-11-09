@@ -1,4 +1,5 @@
 import 'widgets/consumer_components.dart';
+import 'widgets/accessibility_support_card.dart';
 import 'widgets/orientation_hud.dart';
 
 import 'dart:async';
@@ -887,6 +888,8 @@ class _HomeState extends State<Home>
     actions: [
       IconButton(
         key: const Key('command_mic'),
+        constraints: const BoxConstraints(minWidth: 56, minHeight: 56),
+        iconSize: 28,
         onPressed: () => listen(),
         tooltip: listening && !_wakeListening
             ? 'Dừng nghe'
@@ -898,6 +901,7 @@ class _HomeState extends State<Home>
       ),
       IconButton(
         onPressed: sos,
+        constraints: const BoxConstraints(minWidth: 56, minHeight: 56),
         tooltip: 'Trợ giúp khẩn cấp',
         icon: const Icon(Icons.sos_rounded, color: kDanger, size: 25),
       ),
@@ -1151,8 +1155,8 @@ class _IconBtn extends StatelessWidget {
   });
   @override
   Widget build(BuildContext context) => SizedBox(
-    width: 52,
-    height: 52,
+    width: 64,
+    height: 64,
     child: IconButton.filled(
       onPressed: onTap,
       tooltip: 'Tìm địa điểm',
@@ -1332,8 +1336,8 @@ class _MapCard extends StatelessWidget {
                     if (s.destination != null)
                       Marker(
                         point: s.destination!.point,
-                        width: 48,
-                        height: 48,
+                        width: 64,
+                        height: 64,
                         child: const Icon(
                           Icons.location_on_rounded,
                           color: kDanger,
@@ -1428,8 +1432,8 @@ class _MapCard extends StatelessWidget {
                     child: BackdropFilter(
                       filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
                       child: Container(
-                        width: 48,
-                        height: 48,
+                        width: 64,
+                        height: 64,
                         decoration: BoxDecoration(
                           color: kSurface.withValues(alpha: 0.82),
                           borderRadius: BorderRadius.circular(12),
@@ -2487,6 +2491,9 @@ class _SettingsPageState extends State<_SettingsPage> {
       ),
       const SizedBox(height: 18),
 
+      const AccessibilitySupportCard(),
+      const SizedBox(height: 16),
+
       // ── Demo mode
       GlassCard(
         child: SwitchListTile(
@@ -2774,22 +2781,24 @@ class _ContactsEditor extends StatelessWidget {
               key: ObjectKey(contacts[i]),
               padding: const EdgeInsets.only(bottom: 12),
               child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: Column(
-                    children: [
-                      TextField(
-                        controller: contacts[i].name,
-                        textCapitalization: TextCapitalization.words,
-                        style: const TextStyle(color: kText),
-                        decoration: InputDecoration(
-                          labelText: i == 0
-                              ? 'Tên người giám hộ ưu tiên #1'
-                              : 'Tên / ghi chú ${i + 1}',
-                          hintText: i == 0 ? 'VD: Mẹ' : 'VD: Anh Nam (hàng xóm)',
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: Column(
+                      children: [
+                        TextField(
+                          controller: contacts[i].name,
+                          textCapitalization: TextCapitalization.words,
+                          style: const TextStyle(color: kText),
+                          decoration: InputDecoration(
+                            labelText: i == 0
+                                ? 'Tên người giám hộ ưu tiên #1'
+                                : 'Tên / ghi chú ${i + 1}',
+                            hintText: i == 0
+                                ? 'VD: Mẹ'
+                                : 'VD: Anh Nam (hàng xóm)',
+                          ),
                         ),
-                      ),
                         const SizedBox(height: 6),
                         TextField(
                           controller: contacts[i].phone,
@@ -3198,154 +3207,162 @@ class EmergencyBanner extends StatelessWidget {
           return const SizedBox.shrink();
         }
 
-    final isCountdown = phase == EmergencyPhase.countdown;
-    final isActionTaken = phase == EmergencyPhase.actionTaken;
-    final isReconnecting = phase == EmergencyPhase.reconnecting;
+        final isCountdown = phase == EmergencyPhase.countdown;
+        final isActionTaken = phase == EmergencyPhase.actionTaken;
+        final isReconnecting = phase == EmergencyPhase.reconnecting;
 
-    final bgColor = isCountdown
-        ? const Color(0xFF881337)
-        : (isActionTaken ? const Color(0xFF78350F) : const Color(0xFF7F1D1D));
+        final bgColor = isCountdown
+            ? const Color(0xFF881337)
+            : (isActionTaken
+                  ? const Color(0xFF78350F)
+                  : const Color(0xFF7F1D1D));
 
-    final borderColor = isCountdown
-        ? const Color(0xFFF43F5E)
-        : (isActionTaken ? kWarning : const Color(0xFFEF4444));
+        final borderColor = isCountdown
+            ? const Color(0xFFF43F5E)
+            : (isActionTaken ? kWarning : const Color(0xFFEF4444));
 
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: BoxDecoration(
-        color: bgColor,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: borderColor, width: 2),
-        boxShadow: [
-          BoxShadow(
-            color: borderColor.withValues(alpha: isCountdown ? 0.6 : 0.3),
-            blurRadius: isCountdown ? 20 : 10,
-            spreadRadius: isCountdown ? 2 : 0,
-            offset: const Offset(0, 3),
-          ),
-        ],
-      ),
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
-            children: [
-              Container(
-                width: 44,
-                height: 44,
-                decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.15),
-                  shape: BoxShape.circle,
-                ),
-                child: Center(
-                  child: isCountdown
-                      ? Text(
-                          '${state.emergencyCountdown}',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 22,
-                            fontWeight: FontWeight.w900,
-                            fontFamily: 'BeVietnamPro',
-                          ),
-                        )
-                      : Icon(
-                          isActionTaken
-                              ? Icons.check_circle_outline_rounded
-                              : Icons.sensors_off_rounded,
-                          color: Colors.white,
-                          size: 26,
-                        ),
-                ),
+        return Container(
+          width: double.infinity,
+          margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            color: bgColor,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: borderColor, width: 2),
+            boxShadow: [
+              BoxShadow(
+                color: borderColor.withValues(alpha: isCountdown ? 0.6 : 0.3),
+                blurRadius: isCountdown ? 20 : 10,
+                spreadRadius: isCountdown ? 2 : 0,
+                offset: const Offset(0, 3),
               ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      isCountdown
-                          ? 'KHẨN CẤP: KÍNH MẤT KẾT NỐI'
-                          : isActionTaken
+            ],
+          ),
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.15),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Center(
+                      child: isCountdown
+                          ? Text(
+                              '${state.emergencyCountdown}',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 22,
+                                fontWeight: FontWeight.w900,
+                                fontFamily: 'BeVietnamPro',
+                              ),
+                            )
+                          : Icon(
+                              isActionTaken
+                                  ? Icons.check_circle_outline_rounded
+                                  : Icons.sensors_off_rounded,
+                              color: Colors.white,
+                              size: 26,
+                            ),
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          isCountdown
+                              ? 'KHẨN CẤP: KÍNH MẤT KẾT NỐI'
+                              : isActionTaken
                               ? 'ĐÃ GỬI VỊ TRÍ & QUAY SỐ'
                               : 'MẤT KẾT NỐI VỚI KÍNH',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 15,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: 0.5,
-                        fontFamily: 'BeVietnamPro',
-                      ),
-                    ),
-                    const SizedBox(height: 3),
-                    Text(
-                      isCountdown
-                          ? 'Tự động gửi SMS tọa độ và gọi người giám hộ sau ${state.emergencyCountdown}s. Nói "HỦY" nếu bạn an toàn!'
-                          : isActionTaken
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 15,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 0.5,
+                            fontFamily: 'BeVietnamPro',
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          isCountdown
+                              ? 'Tự động gửi SMS tọa độ và gọi người giám hộ sau ${state.emergencyCountdown}s. Nói "HỦY" nếu bạn an toàn!'
+                              : isActionTaken
                               ? 'Đã phát cảnh báo SMS kèm GPS tới người thân và gọi người giám hộ ưu tiên.'
                               : 'Đang thử kết nối lại lần ${state.emergencyRetryCount}/5... Xin bạn đứng yên tại vị trí an toàn.',
-                      style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.92),
-                        fontSize: 12.5,
-                        height: 1.3,
-                        fontFamily: 'BeVietnamPro',
+                          style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.92),
+                            fontSize: 12.5,
+                            height: 1.3,
+                            fontFamily: 'BeVietnamPro',
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  if (isCountdown || isReconnecting) ...[
+                    OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: Colors.white,
+                        side: const BorderSide(color: Colors.white, width: 1.5),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 8,
+                        ),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
                       ),
+                      icon: const Icon(Icons.cancel_outlined, size: 18),
+                      label: Text(
+                        isCountdown ? 'HỦY KHẨN CẤP (TÔI ỔN)' : 'Hủy thử lại',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.w700,
+                          fontSize: 13,
+                          fontFamily: 'BeVietnamPro',
+                        ),
+                      ),
+                      onPressed: () => state.cancelEmergency(),
+                    ),
+                  ] else if (isActionTaken) ...[
+                    TextButton.icon(
+                      style: TextButton.styleFrom(
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 6,
+                        ),
+                      ),
+                      icon: const Icon(Icons.close_rounded, size: 18),
+                      label: const Text(
+                        'Đóng thông báo',
+                        style: TextStyle(
+                          fontWeight: FontWeight.w600,
+                          fontSize: 13,
+                          fontFamily: 'BeVietnamPro',
+                        ),
+                      ),
+                      onPressed: () => state.dismissEmergencyBanner(),
                     ),
                   ],
-                ),
+                ],
               ),
             ],
           ),
-          const SizedBox(height: 12),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.end,
-            children: [
-              if (isCountdown || isReconnecting) ...[
-                OutlinedButton.icon(
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: Colors.white,
-                    side: const BorderSide(color: Colors.white, width: 1.5),
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                  icon: const Icon(Icons.cancel_outlined, size: 18),
-                  label: Text(
-                    isCountdown ? 'HỦY KHẨN CẤP (TÔI ỔN)' : 'Hủy thử lại',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w700,
-                      fontSize: 13,
-                      fontFamily: 'BeVietnamPro',
-                    ),
-                  ),
-                  onPressed: () => state.cancelEmergency(),
-                ),
-              ] else if (isActionTaken) ...[
-                TextButton.icon(
-                  style: TextButton.styleFrom(
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                  ),
-                  icon: const Icon(Icons.close_rounded, size: 18),
-                  label: const Text(
-                    'Đóng thông báo',
-                    style: TextStyle(
-                      fontWeight: FontWeight.w600,
-                      fontSize: 13,
-                      fontFamily: 'BeVietnamPro',
-                    ),
-                  ),
-                  onPressed: () => state.dismissEmergencyBanner(),
-                ),
-              ],
-            ],
-          ),
-        ],
-      ),
-    );
+        );
       },
     );
   }

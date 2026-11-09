@@ -22,6 +22,7 @@ class MainActivity : FlutterActivity() {
     private var socket: WebSocket? = null
     private var socketId: Int? = null
     private var voiceChannel: MethodChannel? = null
+    private var accessibilityBridge: AccessibilityBridge? = null
     private var visible = false
     private var voiceStarting = false
     private var permissionReply: MethodChannel.Result? = null
@@ -94,6 +95,7 @@ class MainActivity : FlutterActivity() {
     override fun onResume() {
         super.onResume()
         visible = true
+        accessibilityBridge?.publish()
         NavigationVoiceService.background = false
         NavigationVoiceService.instance?.refresh()
         permissionResumeReply?.let {
@@ -117,6 +119,8 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         val messenger = flutterEngine.dartExecutor.binaryMessenger
+        accessibilityBridge?.dispose()
+        accessibilityBridge = AccessibilityBridge(this, messenger)
         voiceChannel = MethodChannel(messenger, "secondsight/voice")
         NavigationVoiceService.emit = { method, value -> main.post { voiceChannel?.invokeMethod(method, value) } }
         voiceChannel?.setMethodCallHandler { call, result ->
@@ -184,6 +188,8 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        accessibilityBridge?.dispose()
+        accessibilityBridge = null
         stopService(Intent(this, NavigationVoiceService::class.java))
         permissionReply?.success(false)
         permissionReply = null

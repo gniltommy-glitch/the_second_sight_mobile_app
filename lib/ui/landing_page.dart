@@ -221,7 +221,10 @@ class SpineKinematicPainter extends CustomPainter {
     for (var i = 0; i < boneCount; i++) {
       final current = bonePositions[i];
       final next = bonePositions[(i + 1) % boneCount];
-      final mid = Offset((current.dx + next.dx) / 2, (current.dy + next.dy) / 2);
+      final mid = Offset(
+        (current.dx + next.dx) / 2,
+        (current.dy + next.dy) / 2,
+      );
 
       if (i == 0) {
         spinePath.moveTo(mid.dx, mid.dy);
@@ -609,196 +612,227 @@ class _LandingPageState extends State<LandingPage>
 
                           const SizedBox(height: 12),
 
-                  // Bottom Branding & Status Column
-                  AnimatedBuilder(
-                    animation: Listenable.merge([
-                      _contentSlideAnim,
-                      _contentOpacityAnim,
-                    ]),
-                    builder: (context, _) {
-                      final slideOffset = (1.0 - _contentSlideAnim.value) * 32.0;
-                      return Transform.translate(
-                        offset: Offset(0, slideOffset),
-                        child: Opacity(
-                          opacity: _contentOpacityAnim.value,
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              // Holographic Title
-                              Row(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                children: [
-                                  Container(
-                                    padding: const EdgeInsets.all(6),
-                                    decoration: BoxDecoration(
-                                      shape: BoxShape.circle,
-                                      border: Border.all(
-                                        color: kAccent.withValues(alpha: 0.5),
-                                      ),
-                                      color: kAccent.withValues(alpha: 0.1),
-                                    ),
-                                    child: const Icon(
-                                      Icons.visibility_rounded,
-                                      color: kAccent,
-                                      size: 20,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 10),
-                                  const Text(
-                                    'SecondSight',
-                                    style: TextStyle(
-                                      fontFamily: 'BeVietnamPro',
-                                      fontSize: 28,
-                                      fontWeight: FontWeight.w800,
-                                      letterSpacing: -0.5,
-                                      color: kText,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                              const SizedBox(height: 6),
-                              Text(
-                                'TẦM NHÌN THỨ HAI · HỖ TRỢ ĐỊNH VỊ CỤC BỘ',
-                                style: TextStyle(
-                                  fontFamily: 'BeVietnamPro',
-                                  fontSize: 11,
-                                  fontWeight: FontWeight.w600,
-                                  letterSpacing: 1.2,
-                                  color: kAccent.withValues(alpha: 0.85),
-                                ),
-                              ),
-
-                              const SizedBox(height: 24),
-
-                              // Real-time Loading Status Bar
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 16,
-                                  vertical: 12,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: kSurface.withValues(alpha: 0.7),
-                                  borderRadius: BorderRadius.circular(16),
-                                  border: Border.all(color: kBorder),
-                                ),
-                                child: Column(
-                                  children: [
-                                    Row(
-                                      children: [
-                                        // Neon pulsing beacon
-                                        Container(
-                                          width: 8,
-                                          height: 8,
-                                          decoration: BoxDecoration(
-                                            shape: BoxShape.circle,
-                                            color: isLoaded ? kAccent : kWarning,
-                                            boxShadow: [
-                                              BoxShadow(
-                                                color: (isLoaded
-                                                        ? kAccent
-                                                        : kWarning)
-                                                    .withValues(alpha: 0.6),
-                                                blurRadius: 6,
-                                                spreadRadius: 2,
+                          // Bottom Branding & Status Column
+                          AnimatedBuilder(
+                            animation: Listenable.merge([
+                              _contentSlideAnim,
+                              _contentOpacityAnim,
+                            ]),
+                            builder: (context, _) {
+                              final slideOffset =
+                                  (1.0 - _contentSlideAnim.value) * 32.0;
+                              return Transform.translate(
+                                offset: Offset(0, slideOffset),
+                                child: Opacity(
+                                  opacity: _contentOpacityAnim.value,
+                                  child: Column(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      // Holographic Title
+                                      Row(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.center,
+                                        children: [
+                                          Container(
+                                            padding: const EdgeInsets.all(6),
+                                            decoration: BoxDecoration(
+                                              shape: BoxShape.circle,
+                                              border: Border.all(
+                                                color: kAccent.withValues(
+                                                  alpha: 0.5,
+                                                ),
                                               ),
-                                            ],
+                                              color: kAccent.withValues(
+                                                alpha: 0.1,
+                                              ),
+                                            ),
+                                            child: const Icon(
+                                              Icons.visibility_rounded,
+                                              color: kAccent,
+                                              size: 20,
+                                            ),
                                           ),
-                                        ),
-                                        const SizedBox(width: 10),
-                                        // Vital for widget test: 'Đang khởi động...'
-                                        Expanded(
-                                          child: Text(
-                                            isLoaded
-                                                ? 'Hệ thống đã sẵn sàng'
-                                                : 'Đang khởi động...',
-                                            style: const TextStyle(
+                                          const SizedBox(width: 10),
+                                          const Text(
+                                            'SecondSight',
+                                            style: TextStyle(
                                               fontFamily: 'BeVietnamPro',
-                                              fontSize: 13,
-                                              fontWeight: FontWeight.w600,
+                                              fontSize: 28,
+                                              fontWeight: FontWeight.w800,
+                                              letterSpacing: -0.5,
                                               color: kText,
                                             ),
                                           ),
-                                        ),
-                                        Text(
-                                          '${((isLoaded ? 1.0 : (_introAnim.value * 0.95)) * 100).toInt()}%',
-                                          style: const TextStyle(
-                                            fontFamily: 'BeVietnamPro',
-                                            fontSize: 12,
-                                            fontWeight: FontWeight.w700,
-                                            color: kTextSub,
-                                          ),
-                                        ),
-                                      ],
-                                    ),
-                                    const SizedBox(height: 8),
-
-                                    // Cybernetic Animated Progress Line
-                                    ClipRRect(
-                                      borderRadius: BorderRadius.circular(4),
-                                      child: SizedBox(
-                                        height: 4,
-                                        child: LinearProgressIndicator(
-                                          value: isLoaded
-                                              ? 1.0
-                                              : (_introAnim.value * 0.9),
-                                          backgroundColor: kCard2,
-                                          valueColor:
-                                              const AlwaysStoppedAnimation<
-                                                Color
-                                              >(kAccent),
-                                        ),
+                                        ],
                                       ),
-                                    ),
-                                    const SizedBox(height: 6),
-
-                                    // Dynamic Subtitle Ticker
-                                    Align(
-                                      alignment: Alignment.centerLeft,
-                                      child: Text(
-                                        isLoaded
-                                            ? (widget.state.location != null
-                                                ? 'Vị trí GPS: Đã xác định (±${widget.state.accuracy.round()}m).'
-                                                : 'Cảm biến và dẫn đường đã kết nối.')
-                                            : _statusMessages[_statusStep],
-                                        style: const TextStyle(
+                                      const SizedBox(height: 6),
+                                      Text(
+                                        'TẦM NHÌN THỨ HAI · HỖ TRỢ ĐỊNH VỊ CỤC BỘ',
+                                        style: TextStyle(
                                           fontFamily: 'BeVietnamPro',
                                           fontSize: 11,
-                                          color: kTextSub,
+                                          fontWeight: FontWeight.w600,
+                                          letterSpacing: 1.2,
+                                          color: kAccent.withValues(
+                                            alpha: 0.85,
+                                          ),
                                         ),
                                       ),
-                                    ),
-                                  ],
+
+                                      const SizedBox(height: 24),
+
+                                      // Real-time Loading Status Bar
+                                      Container(
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 16,
+                                          vertical: 12,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: kSurface.withValues(
+                                            alpha: 0.7,
+                                          ),
+                                          borderRadius: BorderRadius.circular(
+                                            16,
+                                          ),
+                                          border: Border.all(color: kBorder),
+                                        ),
+                                        child: Column(
+                                          children: [
+                                            Row(
+                                              children: [
+                                                // Neon pulsing beacon
+                                                Container(
+                                                  width: 8,
+                                                  height: 8,
+                                                  decoration: BoxDecoration(
+                                                    shape: BoxShape.circle,
+                                                    color: isLoaded
+                                                        ? kAccent
+                                                        : kWarning,
+                                                    boxShadow: [
+                                                      BoxShadow(
+                                                        color:
+                                                            (isLoaded
+                                                                    ? kAccent
+                                                                    : kWarning)
+                                                                .withValues(
+                                                                  alpha: 0.6,
+                                                                ),
+                                                        blurRadius: 6,
+                                                        spreadRadius: 2,
+                                                      ),
+                                                    ],
+                                                  ),
+                                                ),
+                                                const SizedBox(width: 10),
+                                                // Vital for widget test: 'Đang khởi động...'
+                                                Expanded(
+                                                  child: Text(
+                                                    isLoaded
+                                                        ? 'Hệ thống đã sẵn sàng'
+                                                        : 'Đang khởi động...',
+                                                    style: const TextStyle(
+                                                      fontFamily:
+                                                          'BeVietnamPro',
+                                                      fontSize: 13,
+                                                      fontWeight:
+                                                          FontWeight.w600,
+                                                      color: kText,
+                                                    ),
+                                                  ),
+                                                ),
+                                                Text(
+                                                  '${((isLoaded ? 1.0 : (_introAnim.value * 0.95)) * 100).toInt()}%',
+                                                  style: const TextStyle(
+                                                    fontFamily: 'BeVietnamPro',
+                                                    fontSize: 12,
+                                                    fontWeight: FontWeight.w700,
+                                                    color: kTextSub,
+                                                  ),
+                                                ),
+                                              ],
+                                            ),
+                                            const SizedBox(height: 8),
+
+                                            // Cybernetic Animated Progress Line
+                                            ClipRRect(
+                                              borderRadius:
+                                                  BorderRadius.circular(4),
+                                              child: SizedBox(
+                                                height: 4,
+                                                child: LinearProgressIndicator(
+                                                  value: isLoaded
+                                                      ? 1.0
+                                                      : (_introAnim.value *
+                                                            0.9),
+                                                  backgroundColor: kCard2,
+                                                  valueColor:
+                                                      const AlwaysStoppedAnimation<
+                                                        Color
+                                                      >(kAccent),
+                                                ),
+                                              ),
+                                            ),
+                                            const SizedBox(height: 6),
+
+                                            // Dynamic Subtitle Ticker
+                                            Align(
+                                              alignment: Alignment.centerLeft,
+                                              child: Text(
+                                                isLoaded
+                                                    ? (widget.state.location !=
+                                                              null
+                                                          ? 'Vị trí GPS: Đã xác định (±${widget.state.accuracy.round()}m).'
+                                                          : 'Cảm biến và dẫn đường đã kết nối.')
+                                                    : _statusMessages[_statusStep],
+                                                style: const TextStyle(
+                                                  fontFamily: 'BeVietnamPro',
+                                                  fontSize: 11,
+                                                  color: kTextSub,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+
+                                      const SizedBox(height: 18),
+
+                                      // Enter Button (visible when ready or loaded)
+                                      if (_canProceed && isLoaded)
+                                        FilledButton.icon(
+                                          onPressed: widget.onEnter,
+                                          icon: const Icon(
+                                            Icons.arrow_forward_rounded,
+                                            size: 18,
+                                          ),
+                                          label: const Text('BẮT ĐẦU NGAY'),
+                                          style: FilledButton.styleFrom(
+                                            minimumSize: const Size.fromHeight(
+                                              72,
+                                            ),
+                                            textStyle: const TextStyle(
+                                              fontSize: 18,
+                                              fontWeight: FontWeight.w700,
+                                            ),
+                                            backgroundColor: kAccent,
+                                            foregroundColor: const Color(
+                                              0xFF001A14,
+                                            ),
+                                            shape: RoundedRectangleBorder(
+                                              borderRadius:
+                                                  BorderRadius.circular(14),
+                                            ),
+                                          ),
+                                        )
+                                      else
+                                        const SizedBox(height: 72),
+                                    ],
+                                  ),
                                 ),
-                              ),
-
-                              const SizedBox(height: 18),
-
-                              // Enter Button (visible when ready or loaded)
-                              if (_canProceed && isLoaded)
-                                FilledButton.icon(
-                                  onPressed: widget.onEnter,
-                                  icon: const Icon(
-                                    Icons.arrow_forward_rounded,
-                                    size: 18,
-                                  ),
-                                  label: const Text('BẮT ĐẦU NGAY'),
-                                  style: FilledButton.styleFrom(
-                                    minimumSize: const Size.fromHeight(50),
-                                    backgroundColor: kAccent,
-                                    foregroundColor: const Color(0xFF001A14),
-                                    shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(14),
-                                    ),
-                                  ),
-                                )
-                              else
-                                const SizedBox(height: 50),
-                            ],
+                              );
+                            },
                           ),
-                        ),
-                      );
-                    },
-                  ),
 
                           const SizedBox(height: 16),
                         ],
