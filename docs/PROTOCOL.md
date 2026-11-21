@@ -93,6 +93,12 @@ Pin không đo được thì gửi null/bỏ trường; không tự mặc địn
 
 `confidence` là giá trị model, không tự nó chứng minh cảm biến đủ tin cậy. Pi phát cảnh báo trực tiếp; mobile hiển thị và rung, tránh hai thiết bị nói đè nhau. Lỗi hệ thống gửi `{"type":"system_error","message":"..."}`; không nhét token/API key vào message.
 
+```json
+{"type":"path_blocked","reason":"blind_spot","distance_m":3.5,"avoid_direction":"left","message":"Phát hiện điểm mù và vật cản chắn lối đi. Đang tự động chuyển hướng sang bên trái."}
+```
+
+Khi kính phát hiện điểm mù, vật cản chắn toàn bộ hành lang (`dead_end`), mất lối đi bộ (`no_sidewalk`), hoặc vật cản cần đổi tuyến (`obstacle`), kính gửi gói `path_blocked` kèm khoảng cách và hướng tránh khả dụng (`avoid_direction`: `left`/`right`). Mobile app lập tức phát âm thanh/rung cảnh báo khẩn cấp và tự động tính lại lộ trình mới (re-route) tránh điểm mù, đồng thời gửi snapshot route mới xuống kính mà không yêu cầu người dùng phải thao tác tay. Gói `hazard` mang `hazard_class: "blind_spot"` hoặc `"path_blocked"` cũng kích hoạt cơ chế chuyển hướng tự động tương tự.
+
 ## Cấu hình
 
 ```json

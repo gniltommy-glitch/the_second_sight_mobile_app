@@ -288,6 +288,29 @@ class PiSimulator:
             'message': 'Mô phỏng: có mép hụt phía trước.'})
         return web.json_response({'ok': True, 'demo': True, 'hazard_id': hazard_id})
 
+    async def path_blocked(self, request):
+        # Explicit demo endpoint for blind spot / path blockage.
+        reason = 'blind_spot'
+        avoid = 'left'
+        try:
+            body = await request.json()
+            if isinstance(body, dict):
+                reason = body.get('reason', reason)
+                avoid = body.get('avoid_direction', avoid)
+        except Exception:
+            pass
+        msg = {
+            'type': 'path_blocked',
+            'demo': True,
+            'reason': reason,
+            'distance_m': 3.5,
+            'avoid_direction': avoid,
+            'message': f'Mô phỏng: Phát hiện điểm mù và vật cản chắn lối đi. Đang tự động chuyển hướng sang {avoid}.'
+        }
+        for ws in list(self.peers):
+            await ws.send_json(msg)
+        return web.json_response({'ok': True, 'demo': True, 'reason': reason, 'avoid_direction': avoid})
+
 
 def valid_instruction(j):
     return (type(j.get('sequence')) is int and j['sequence'] >= 0
@@ -318,6 +341,7 @@ def create_app(token, voice=False, imu=None):
     app.router.add_post('/navigation/state', sim.navigation)
     app.router.add_post('/settings', sim.configure)
     app.router.add_post('/demo/hazard', sim.hazard)
+    app.router.add_post('/demo/path_blocked', sim.path_blocked)
     app.router.add_post('/audio/test', sim.audio_test)
 
     async def status(_):

@@ -750,6 +750,7 @@ class _HomeState extends State<Home>
         s.hazard != null &&
         s.hazardAt != null &&
         DateTime.now().difference(s.hazardAt!).inSeconds < 12;
+    final isBlocked = s.isPathBlocked;
 
     return Scaffold(
       backgroundColor: kBg,
@@ -764,7 +765,7 @@ class _HomeState extends State<Home>
           onDoubleTap: () => listen(),
           child: Stack(
             children: [
-              _buildBody(isHazard),
+              _buildBody(isHazard, isBlocked),
               if (s.pendingConfirm != null)
                 Positioned.fill(
                   child: _ConfirmOverlay(
@@ -790,7 +791,7 @@ class _HomeState extends State<Home>
     );
   }
 
-  Widget _buildBody(bool isHazard) {
+  Widget _buildBody(bool isHazard, bool isBlocked) {
     return Column(
       children: [
         // Extend behind status bar.
@@ -827,6 +828,16 @@ class _HomeState extends State<Home>
               text: s.hazard!,
               color: const Color(0xFF7F1D1D),
               icon: Icons.warning_amber_rounded,
+              urgent: true,
+            ),
+          ),
+        if (isBlocked && !isHazard)
+          Semantics(
+            liveRegion: true,
+            child: AnimatedBanner(
+              text: s.pathBlockedMessage!,
+              color: const Color(0xFFC2410C),
+              icon: Icons.alt_route_rounded,
               urgent: true,
             ),
           ),
@@ -2239,10 +2250,27 @@ class _DevicePage extends StatelessWidget {
 
         if (s.demo) ...[
           const SizedBox(height: 16),
-          OutlinedButton.icon(
-            onPressed: s.demoHazard,
-            icon: const Icon(Icons.warning_amber_rounded),
-            label: const Text('Thử cảnh báo mép hụt'),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: s.demoHazard,
+                  icon: const Icon(Icons.warning_amber_rounded),
+                  label: const Text('Thử mép hụt'),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () => s.demoPathBlocked(
+                    reason: 'blind_spot',
+                    avoidDirection: 'left',
+                  ),
+                  icon: const Icon(Icons.alt_route_rounded),
+                  label: const Text('Thử điểm mù'),
+                ),
+              ),
+            ],
           ),
         ],
         const SizedBox(height: 16),
@@ -2344,6 +2372,15 @@ class _LogsPage extends StatelessWidget {
       ...s.events.asMap().entries.map((e) {
         final ev = e.value;
         final isHazard = ev['type'] == 'hazard';
+        final isBlocked = ev['type'] == 'path_blocked';
+        final isReroute = ev['type'] == 'reroute_success';
+        final highlightColor = isHazard
+            ? kDanger
+            : isBlocked
+            ? const Color(0xFFC2410C)
+            : isReroute
+            ? kAccent
+            : null;
         return Container(
           margin: const EdgeInsets.only(bottom: 6),
           padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
@@ -2351,15 +2388,23 @@ class _LogsPage extends StatelessWidget {
             color: kSurface,
             borderRadius: BorderRadius.circular(12),
             border: Border.all(
-              color: isHazard ? kDanger.withValues(alpha: 0.3) : kBorder,
+              color: highlightColor != null
+                  ? highlightColor.withValues(alpha: 0.3)
+                  : kBorder,
             ),
           ),
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Icon(
-                isHazard ? Icons.warning_amber_rounded : Icons.history_rounded,
-                color: isHazard ? kDanger : kTextSub,
+                isHazard
+                    ? Icons.warning_amber_rounded
+                    : isBlocked
+                    ? Icons.alt_route_rounded
+                    : isReroute
+                    ? Icons.navigation_rounded
+                    : Icons.history_rounded,
+                color: highlightColor ?? kTextSub,
                 size: 16,
               ),
               const SizedBox(width: 10),

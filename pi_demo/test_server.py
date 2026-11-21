@@ -179,6 +179,18 @@ class ProtocolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(clears, [second])
         self.assertNotIn(first, clears)
 
+    async def test_path_blocked_broadcast(self):
+        ws = await self.client.ws_connect('/ws', headers=self.headers)
+        response = await self.client.post('/demo/path_blocked', headers=self.headers,
+                                          json={'reason': 'blind_spot', 'avoid_direction': 'left'})
+        self.assertEqual(response.status, 200)
+        msg = await asyncio.wait_for(ws.receive_json(), 2)
+        self.assertEqual(msg['type'], 'path_blocked')
+        self.assertEqual(msg['reason'], 'blind_spot')
+        self.assertEqual(msg['avoid_direction'], 'left')
+        self.assertIn('điểm mù', msg['message'])
+        await ws.close()
+
 
 if __name__ == '__main__':
     unittest.main()

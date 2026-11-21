@@ -185,8 +185,15 @@ class AppState extends ChangeNotifier {
   bool loaded = false, busy = false, demo = false, vibration = true;
   bool syncing = false, syncPending = false;
   String? error, notice, hazard;
+  String? pathBlockedReason, pathBlockedMessage, pathBlockedDirection;
   bool _disposed = false;
-  DateTime? hazardAt, statusAt, fixAt;
+  DateTime? hazardAt, statusAt, fixAt, pathBlockedAt;
+  DateTime _lastObstacleReroute = DateTime.fromMillisecondsSinceEpoch(0);
+
+  bool get isPathBlocked =>
+      pathBlockedMessage != null &&
+      pathBlockedAt != null &&
+      DateTime.now().difference(pathBlockedAt!).inSeconds < 12;
   String warningLevel = 'normal';
   List<EmergencyContact> emergencyContacts = [];
   double volume = 0.8, speechRate = 0.5, accuracy = double.infinity;
@@ -494,7 +501,51 @@ class AppState extends ChangeNotifier {
           (old['yolo_fps'] is! num || (old['yolo_fps'] as num) >= 10)) {
         log('low_fps', 'FPS nhận diện dưới 10');
       }
+    } else if (j['type'] == 'path_blocked') {
+      final reason = (j['reason'] ?? 'blind_spot').toString();
+      final msg = (j['message'] as String?)?.trim();
+      final avoidDirection = j['avoid_direction'] as String?;
+
+      final prompt = (msg != null && msg.isNotEmpty)
+          ? msg
+          : (reason == 'blind_spot'
+                ? 'Phát hiện điểm mù và vật cản phía trước. Đang tự động chuyển hướng và tìm lộ trình mới.'
+                : reason == 'dead_end'
+                ? 'Phía trước là đường cụt. Đang tự động chuyển hướng và tìm lộ trình mới.'
+                : reason == 'no_sidewalk'
+                ? 'Phía trước không có lối đi bộ. Đang tự động chuyển hướng và tìm lộ trình mới.'
+                : 'Lối đi phía trước bị chặn. Đang tự động chuyển hướng và tìm lộ trình mới.');
+
+      pathBlockedMessage = prompt;
+      pathBlockedReason = reason;
+      pathBlockedDirection = avoidDirection;
+      pathBlockedAt = DateTime.now();
+      log('path_blocked', prompt);
+      notice = prompt;
+      if (vibration) unawaited(HapticFeedback.heavyImpact());
+
+      // Ngắt lời thoại cũ và đọc cảnh báo khẩn
+      unawaited(say(prompt, urgent: true));
+
+      final isNavigating =
+          active || offRoute || journey == JourneyState.navigating;
+      if (isNavigating) {
+        unawaited(
+          _rerouteForObstacle(
+            reason: reason,
+            prompt: prompt,
+            avoidDirection: avoidDirection,
+          ),
+        );
+      }
     } else if (j['type'] == 'hazard') {
+      final hClass = '${j['hazard_class'] ?? ''}';
+      final isRerouteHazard =
+          hClass == 'path_blocked' ||
+          hClass == 'blind_spot' ||
+          hClass == 'dead_end' ||
+          j['action'] == 'reroute';
+
       hazard = '${j['message'] ?? j['hazard_class'] ?? 'Nguy hiểm phía trước'}';
       hazardAt = DateTime.now();
       log('hazard', hazard!);
@@ -502,6 +553,24 @@ class AppState extends ChangeNotifier {
       // Pi owns spoken hazards; the phone must go silent immediately so the
       // two devices never talk over each other.
       _yieldToPiHazard(j);
+
+      if (isRerouteHazard) {
+        pathBlockedMessage = hazard;
+        pathBlockedReason = hClass.isNotEmpty ? hClass : 'blind_spot';
+        pathBlockedDirection = j['avoid_direction'] as String?;
+        pathBlockedAt = DateTime.now();
+        final isNavigating =
+            active || offRoute || journey == JourneyState.navigating;
+        if (isNavigating) {
+          unawaited(
+            _rerouteForObstacle(
+              reason: pathBlockedReason!,
+              prompt: hazard!,
+              avoidDirection: pathBlockedDirection,
+            ),
+          );
+        }
+      }
     } else if (j['type'] == 'hazard_hold') {
       if (j['hazard_id'] != null && j['hazard_id'].toString() == _hazardId) {
         final until = DateTime.now().add(const Duration(seconds: 3));
@@ -1146,6 +1215,10 @@ class AppState extends ChangeNotifier {
       _confirmTap!.complete(YesNo.cancel);
       cancelReply?.call();
     }
+    pathBlockedMessage = null;
+    pathBlockedReason = null;
+    pathBlockedDirection = null;
+    pathBlockedAt = null;
     journey = route == null ? JourneyState.idle : JourneyState.ready;
     _revision++;
     syncPending = true;
@@ -1274,6 +1347,135 @@ class AppState extends ChangeNotifier {
       busy = false;
       notifyListeners();
     }
+  }
+
+  Future<void> _rerouteForObstacle({
+    required String reason,
+    required String prompt,
+    String? avoidDirection,
+  }) async {
+    if (destination == null) return;
+    if (DateTime.now().difference(_lastObstacleReroute).inSeconds < 3 && busy) {
+      return;
+    }
+    _lastObstacleReroute = DateTime.now();
+    _lastReroute = DateTime.now();
+    busy = true;
+    final generation = ++_routeGeneration;
+    notifyListeners();
+
+    try {
+      WalkRoute newRoute;
+      if (demo) {
+        newRoute = _createDemoDetourRoute(avoidDirection: avoidDirection);
+      } else {
+        if (location == null) return;
+        newRoute = await routing.route(location!, destination!);
+      }
+
+      if ((!active && !offRoute && journey != JourneyState.navigating) ||
+          generation != _routeGeneration) {
+        return;
+      }
+
+      route = newRoute;
+      _resetProgress();
+      if (demo) _demoIndex = 0;
+      _revision++;
+      syncPending = true;
+      if (!demo) {
+        await prefs.setString('route', jsonEncode(newRoute.toJson()));
+      }
+      journey = JourneyState.navigating;
+      _advance();
+      await sync();
+
+      final directionText = avoidDirection == 'left'
+          ? 'bên trái'
+          : avoidDirection == 'right'
+          ? 'bên phải'
+          : avoidDirection;
+      final successMsg = directionText != null && directionText.isNotEmpty
+          ? 'Đã chuyển hướng sang $directionText và tạo lộ trình mới. Hãy tiếp tục đi theo chỉ dẫn.'
+          : 'Đã tự động chuyển hướng và tạo lộ trình mới. Hãy tiếp tục đi theo chỉ dẫn.';
+      notice = successMsg;
+      pathBlockedMessage = successMsg;
+      unawaited(say(successMsg, urgent: true));
+      log('reroute_success', successMsg);
+    } catch (_) {
+      final failMsg =
+          'Chưa tìm được tuyến đường mới tránh vật cản. Vui lòng dừng lại và kiểm tra xung quanh.';
+      notice = failMsg;
+      log('reroute_failed', failMsg);
+      unawaited(say(failMsg, urgent: true));
+    } finally {
+      busy = false;
+      notifyListeners();
+    }
+  }
+
+  WalkRoute _createDemoDetourRoute({String? avoidDirection}) {
+    final cur = location ?? const LatLng(10.762622, 106.660172);
+    final isLeft = avoidDirection != 'right';
+    final offsetLng = isLeft ? -0.0004 : 0.0004;
+    final dest =
+        destination ??
+        Place(
+          'Điểm đến mô phỏng',
+          LatLng(cur.latitude + 0.0015, cur.longitude + 0.0012),
+        );
+
+    final points = <LatLng>[cur];
+    for (var i = 1; i <= 10; i++) {
+      points.add(
+        LatLng(
+          cur.latitude + (i * 0.00002),
+          cur.longitude + (i * offsetLng / 10),
+        ),
+      );
+    }
+    final mid = points.last;
+    for (var i = 1; i <= 15; i++) {
+      points.add(LatLng(mid.latitude + i * 0.00006, mid.longitude));
+    }
+    final beforeDest = points.last;
+    for (var i = 1; i <= 15; i++) {
+      final t = i / 15.0;
+      points.add(
+        LatLng(
+          beforeDest.latitude + t * (dest.point.latitude - beforeDest.latitude),
+          beforeDest.longitude +
+              t * (dest.point.longitude - beforeDest.longitude),
+        ),
+      );
+    }
+
+    return WalkRoute(
+      id: const Uuid().v4(),
+      destination: dest,
+      points: points,
+      steps: [
+        Maneuver(
+          isLeft
+              ? 'Chuyển hướng rẽ trái tránh vật cản'
+              : 'Chuyển hướng rẽ phải tránh vật cản',
+          'Tuyến đường mới',
+          isLeft ? 'turn_left' : 'turn_right',
+          0,
+        ),
+        const Maneuver(
+          'Đi thẳng theo lối đi an toàn',
+          'Tuyến đường mới',
+          'continue',
+          10,
+        ),
+        const Maneuver('Đã đến điểm đến', '', 'arrive', 40),
+      ],
+      distance: 320,
+      seconds: 250,
+      created: DateTime.now(),
+      demo: true,
+    );
   }
 
   // ─── Milestone TTS (30 m / 10 m / 0 m) ─────────────────────────
@@ -1486,6 +1688,21 @@ class AppState extends ChangeNotifier {
       'message': 'Mô phỏng: Dừng lại — có mép hụt phía trước.',
     });
     unawaited(say(hazard!, urgent: true));
+  }
+
+  void demoPathBlocked({
+    String reason = 'blind_spot',
+    String avoidDirection = 'left',
+  }) {
+    if (!demo) return;
+    handlePiMessage({
+      'type': 'path_blocked',
+      'reason': reason,
+      'avoid_direction': avoidDirection,
+      'distance_m': 3.5,
+      'message':
+          'Mô phỏng: Phát hiện điểm mù và vật cản chắn lối đi. Đang tự động chuyển hướng sang ${avoidDirection == "left" ? "bên trái" : "bên phải"}.',
+    });
   }
 
   Future<void> saveSettings() async {
