@@ -185,10 +185,23 @@ class AppState extends ChangeNotifier {
   bool loaded = false, busy = false, demo = false, vibration = true;
   bool syncing = false, syncPending = false;
   String? error, notice, hazard;
+
+  // Cấp độ 1: Vật cản nhỏ / Điểm mù trên vỉa hè (Né cục bộ sang trái/phải, KHÔNG gọi GraphHopper)
+  String? localAvoidanceMessage, localAvoidanceDirection;
+  double? localAvoidanceDistanceM;
+  DateTime? localAvoidanceAt;
+
+  bool get hasLocalAvoidance =>
+      localAvoidanceMessage != null &&
+      localAvoidanceAt != null &&
+      DateTime.now().difference(localAvoidanceAt!).inSeconds < 8;
+
+  // Cấp độ 2: Bị chặn hoàn toàn lối đi (Đánh dấu điểm né & gọi GraphHopper _reroute)
   String? pathBlockedReason, pathBlockedMessage, pathBlockedDirection;
   bool _disposed = false;
   DateTime? hazardAt, statusAt, fixAt, pathBlockedAt;
   DateTime _lastObstacleReroute = DateTime.fromMillisecondsSinceEpoch(0);
+  final List<LatLng> blockedLocations = [];
 
   bool get isPathBlocked =>
       pathBlockedMessage != null &&
@@ -501,49 +514,40 @@ class AppState extends ChangeNotifier {
           (old['yolo_fps'] is! num || (old['yolo_fps'] as num) >= 10)) {
         log('low_fps', 'FPS nhận diện dưới 10');
       }
-    } else if (j['type'] == 'path_blocked') {
-      final reason = (j['reason'] ?? 'blind_spot').toString();
+    } else if (j['type'] == 'obstacle_avoid' ||
+        j['type'] == 'local_obstacle') {
+      // Cấp độ 1: Vật cản nhỏ / điểm mù cục bộ trên vỉa hè -> chỉ né vài bước, KHÔNG gọi GraphHopper
+      final direction =
+          (j['avoid_direction'] ?? j['direction'] ?? 'left').toString();
+      final dist = (j['distance_m'] as num?)?.toDouble();
       final msg = (j['message'] as String?)?.trim();
-      final avoidDirection = j['avoid_direction'] as String?;
-
-      final prompt = (msg != null && msg.isNotEmpty)
-          ? msg
-          : (reason == 'blind_spot'
-                ? 'Phát hiện điểm mù và vật cản phía trước. Đang tự động chuyển hướng và tìm lộ trình mới.'
-                : reason == 'dead_end'
-                ? 'Phía trước là đường cụt. Đang tự động chuyển hướng và tìm lộ trình mới.'
-                : reason == 'no_sidewalk'
-                ? 'Phía trước không có lối đi bộ. Đang tự động chuyển hướng và tìm lộ trình mới.'
-                : 'Lối đi phía trước bị chặn. Đang tự động chuyển hướng và tìm lộ trình mới.');
-
-      pathBlockedMessage = prompt;
-      pathBlockedReason = reason;
-      pathBlockedDirection = avoidDirection;
-      pathBlockedAt = DateTime.now();
-      log('path_blocked', prompt);
-      notice = prompt;
-      if (vibration) unawaited(HapticFeedback.heavyImpact());
-
-      // Ngắt lời thoại cũ và đọc cảnh báo khẩn
-      unawaited(say(prompt, urgent: true));
-
-      final isNavigating =
-          active || offRoute || journey == JourneyState.navigating;
-      if (isNavigating) {
-        unawaited(
-          _rerouteForObstacle(
-            reason: reason,
-            prompt: prompt,
-            avoidDirection: avoidDirection,
-          ),
-        );
-      }
+      _handleLocalObstacleAvoidance(
+        direction: direction,
+        distanceM: dist,
+        message: msg,
+      );
+    } else if (j['type'] == 'path_blocked' ||
+        j['type'] == 'blocked_path') {
+      // Cấp độ 2: Bị chặn hoàn toàn lối đi (rào chắn/công trình/đường cụt) -> gọi GraphHopper reroute
+      final reason = (j['reason'] ?? 'barrier').toString();
+      final msg = (j['message'] as String?)?.trim();
+      final avoidDirection =
+          (j['avoid_direction'] ?? j['direction']) as String?;
+      _rerouteForBlockedPath(
+        reason: reason,
+        message: msg,
+        avoidDirection: avoidDirection,
+      );
     } else if (j['type'] == 'hazard') {
       final hClass = '${j['hazard_class'] ?? ''}';
+      final isLocalAvoidance =
+          hClass == 'obstacle_avoid' || hClass == 'local_obstacle';
       final isRerouteHazard =
           hClass == 'path_blocked' ||
-          hClass == 'blind_spot' ||
+          hClass == 'blocked_path' ||
           hClass == 'dead_end' ||
+          hClass == 'construction' ||
+          hClass == 'barrier' ||
           j['action'] == 'reroute';
 
       hazard = '${j['message'] ?? j['hazard_class'] ?? 'Nguy hiểm phía trước'}';
@@ -554,22 +558,20 @@ class AppState extends ChangeNotifier {
       // two devices never talk over each other.
       _yieldToPiHazard(j);
 
-      if (isRerouteHazard) {
-        pathBlockedMessage = hazard;
-        pathBlockedReason = hClass.isNotEmpty ? hClass : 'blind_spot';
-        pathBlockedDirection = j['avoid_direction'] as String?;
-        pathBlockedAt = DateTime.now();
-        final isNavigating =
-            active || offRoute || journey == JourneyState.navigating;
-        if (isNavigating) {
-          unawaited(
-            _rerouteForObstacle(
-              reason: pathBlockedReason!,
-              prompt: hazard!,
-              avoidDirection: pathBlockedDirection,
-            ),
-          );
-        }
+      if (isLocalAvoidance) {
+        _handleLocalObstacleAvoidance(
+          direction:
+              (j['avoid_direction'] ?? j['direction'] ?? 'left').toString(),
+          distanceM: (j['distance_m'] as num?)?.toDouble(),
+          message: hazard,
+        );
+      } else if (isRerouteHazard) {
+        _rerouteForBlockedPath(
+          reason: hClass.isNotEmpty ? hClass : 'barrier',
+          message: hazard,
+          avoidDirection:
+              (j['avoid_direction'] ?? j['direction']) as String?,
+        );
       }
     } else if (j['type'] == 'hazard_hold') {
       if (j['hazard_id'] != null && j['hazard_id'].toString() == _hazardId) {
@@ -1219,6 +1221,11 @@ class AppState extends ChangeNotifier {
     pathBlockedReason = null;
     pathBlockedDirection = null;
     pathBlockedAt = null;
+    localAvoidanceMessage = null;
+    localAvoidanceDirection = null;
+    localAvoidanceAt = null;
+    localAvoidanceDistanceM = null;
+    blockedLocations.clear();
     journey = route == null ? JourneyState.idle : JourneyState.ready;
     _revision++;
     syncPending = true;
@@ -1349,7 +1356,90 @@ class AppState extends ChangeNotifier {
     }
   }
 
-  Future<void> _rerouteForObstacle({
+  /// Cấp độ 1: Né cục bộ khi gặp điểm mù hoặc vật cản nhỏ trên vỉa hè.
+  /// Chỉ thông báo giọng nói nhắc bước chân né trái/phải, TUYỆT ĐỐI KHÔNG gọi GraphHopper dựng lại cả route!
+  void _handleLocalObstacleAvoidance({
+    required String direction,
+    double? distanceM,
+    String? message,
+  }) {
+    final dirText = direction == 'left'
+        ? 'bên trái'
+        : direction == 'right'
+            ? 'bên phải'
+            : 'chính giữa';
+    final distanceText = (distanceM != null && distanceM > 0)
+        ? ' cách khoảng ${distanceM.toStringAsFixed(1).replaceAll('.', ' phẩy ')} mét'
+        : '';
+    final prompt = (message != null && message.trim().isNotEmpty)
+        ? message.trim()
+        : 'Có vật cản trên vỉa hè$distanceText. Vui lòng bước chếch sang $dirText vài bước để né.';
+
+    localAvoidanceMessage = prompt;
+    localAvoidanceDirection = direction;
+    localAvoidanceDistanceM = distanceM;
+    localAvoidanceAt = DateTime.now();
+
+    log('obstacle_avoid', prompt);
+    notice = prompt;
+    if (vibration) unawaited(HapticFeedback.mediumImpact());
+
+    // Chỉ phát âm thanh / rung hướng dẫn né cục bộ, không can thiệp vào lộ trình GraphHopper
+    unawaited(say(prompt, urgent: true));
+    notifyListeners();
+  }
+
+  /// Cấp độ 2: Xử lý khi lối đi bị chặn hoàn toàn (rào chắn, công trình, đường cụt, mất vỉa hè).
+  /// Đánh dấu đoạn bị chặn vào [blockedLocations], phát âm cảnh báo khẩn và gọi GraphHopper _reroute() để lập tuyến vòng mới.
+  Future<void> _rerouteForBlockedPath({
+    required String reason,
+    String? message,
+    String? avoidDirection,
+    LatLng? blockedAt,
+  }) async {
+    final prompt = (message != null && message.trim().isNotEmpty)
+        ? message.trim()
+        : (reason == 'dead_end'
+            ? 'Phía trước là đường cụt. Lối đi bị chặn hoàn toàn, đang tìm tuyến đường mới.'
+            : reason == 'construction' || reason == 'barrier'
+                ? 'Phía trước có rào chắn hoặc công trình thi công chắn lối. Đang tự động tìm tuyến đường vòng.'
+                : reason == 'no_sidewalk'
+                    ? 'Phía trước không có lối đi bộ. Đang tìm tuyến đường mới.'
+                    : 'Lối đi phía trước bị chặn hoàn toàn. Đang tự động chuyển hướng và tìm lộ trình mới.');
+
+    pathBlockedMessage = prompt;
+    pathBlockedReason = reason;
+    pathBlockedDirection = avoidDirection;
+    pathBlockedAt = DateTime.now();
+
+    // Đánh dấu điểm bị chặn để né
+    final blockedPoint = blockedAt ?? location;
+    if (blockedPoint != null) {
+      blockedLocations.add(blockedPoint);
+    }
+
+    log('path_blocked', prompt);
+    notice = prompt;
+    if (vibration) unawaited(HapticFeedback.heavyImpact());
+
+    // Ngắt lời thoại cũ và đọc cảnh báo khẩn
+    unawaited(say(prompt, urgent: true));
+
+    final isNavigating =
+        active || offRoute || journey == JourneyState.navigating;
+    if (isNavigating) {
+      unawaited(
+        _executeBlockedPathReroute(
+          reason: reason,
+          prompt: prompt,
+          avoidDirection: avoidDirection,
+        ),
+      );
+    }
+    notifyListeners();
+  }
+
+  Future<void> _executeBlockedPathReroute({
     required String reason,
     required String prompt,
     String? avoidDirection,
@@ -1393,8 +1483,8 @@ class AppState extends ChangeNotifier {
       final directionText = avoidDirection == 'left'
           ? 'bên trái'
           : avoidDirection == 'right'
-          ? 'bên phải'
-          : avoidDirection;
+              ? 'bên phải'
+              : avoidDirection;
       final successMsg = directionText != null && directionText.isNotEmpty
           ? 'Đã chuyển hướng sang $directionText và tạo lộ trình mới. Hãy tiếp tục đi theo chỉ dẫn.'
           : 'Đã tự động chuyển hướng và tạo lộ trình mới. Hãy tiếp tục đi theo chỉ dẫn.';
@@ -1404,7 +1494,7 @@ class AppState extends ChangeNotifier {
       log('reroute_success', successMsg);
     } catch (_) {
       final failMsg =
-          'Chưa tìm được tuyến đường mới tránh vật cản. Vui lòng dừng lại và kiểm tra xung quanh.';
+          'Chưa tìm được tuyến đường mới tránh đoạn bị chặn. Vui lòng dừng lại và kiểm tra xung quanh.';
       notice = failMsg;
       log('reroute_failed', failMsg);
       unawaited(say(failMsg, urgent: true));
@@ -1690,8 +1780,24 @@ class AppState extends ChangeNotifier {
     unawaited(say(hazard!, urgent: true));
   }
 
-  void demoPathBlocked({
-    String reason = 'blind_spot',
+  /// Mô phỏng Cấp độ 1: Vật cản nhỏ / điểm mù trên vỉa hè -> chỉ né cục bộ vài bước, KHÔNG gọi GraphHopper
+  void demoObstacleAvoid({
+    String direction = 'left',
+    double distanceM = 2.0,
+  }) {
+    if (!demo) return;
+    handlePiMessage({
+      'type': 'obstacle_avoid',
+      'avoid_direction': direction,
+      'distance_m': distanceM,
+      'message':
+          'Mô phỏng: Phát hiện vật cản nhỏ trên vỉa hè cách ${distanceM.toStringAsFixed(1).replaceAll(".", " phẩy ")} mét. Vui lòng bước chếch sang ${direction == "left" ? "bên trái" : "bên phải"} 2 bước để né.',
+    });
+  }
+
+  /// Mô phỏng Cấp độ 2: Bị chặn hoàn toàn lối đi (rào chắn / công trình) -> gọi GraphHopper _reroute()
+  void demoBlockedPath({
+    String reason = 'construction',
     String avoidDirection = 'left',
   }) {
     if (!demo) return;
@@ -1701,9 +1807,15 @@ class AppState extends ChangeNotifier {
       'avoid_direction': avoidDirection,
       'distance_m': 3.5,
       'message':
-          'Mô phỏng: Phát hiện điểm mù và vật cản chắn lối đi. Đang tự động chuyển hướng sang ${avoidDirection == "left" ? "bên trái" : "bên phải"}.',
+          'Mô phỏng: Lối đi bị chặn hoàn toàn do ${reason == "construction" ? "công trình thi công" : "vật cản lớn"}. Đang tự động tìm tuyến đường vòng mới.',
     });
   }
+
+  /// Alias tương thích ngược cho demo chặn đường
+  void demoPathBlocked({
+    String reason = 'blind_spot',
+    String avoidDirection = 'left',
+  }) => demoBlockedPath(reason: reason, avoidDirection: avoidDirection);
 
   Future<void> saveSettings() async {
     await secure.write(key: 'routing_key', value: routing.key.trim());

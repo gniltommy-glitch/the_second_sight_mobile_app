@@ -751,6 +751,7 @@ class _HomeState extends State<Home>
         s.hazardAt != null &&
         DateTime.now().difference(s.hazardAt!).inSeconds < 12;
     final isBlocked = s.isPathBlocked;
+    final isLocalAvoid = s.hasLocalAvoidance;
 
     return Scaffold(
       backgroundColor: kBg,
@@ -765,7 +766,7 @@ class _HomeState extends State<Home>
           onDoubleTap: () => listen(),
           child: Stack(
             children: [
-              _buildBody(isHazard, isBlocked),
+              _buildBody(isHazard, isBlocked, isLocalAvoid),
               if (s.pendingConfirm != null)
                 Positioned.fill(
                   child: _ConfirmOverlay(
@@ -791,7 +792,7 @@ class _HomeState extends State<Home>
     );
   }
 
-  Widget _buildBody(bool isHazard, bool isBlocked) {
+  Widget _buildBody(bool isHazard, bool isBlocked, bool isLocalAvoid) {
     return Column(
       children: [
         // Extend behind status bar.
@@ -829,6 +830,19 @@ class _HomeState extends State<Home>
               color: const Color(0xFF7F1D1D),
               icon: Icons.warning_amber_rounded,
               urgent: true,
+            ),
+          ),
+        if (isLocalAvoid && !isHazard && !isBlocked)
+          Semantics(
+            liveRegion: true,
+            child: AnimatedBanner(
+              text: s.localAvoidanceMessage!,
+              color: const Color(0xFFD97706),
+              icon: s.localAvoidanceDirection == 'right'
+                  ? Icons.turn_right_rounded
+                  : s.localAvoidanceDirection == 'left'
+                      ? Icons.turn_left_rounded
+                      : Icons.directions_walk_rounded,
             ),
           ),
         if (isBlocked && !isHazard)
@@ -2262,15 +2276,27 @@ class _DevicePage extends StatelessWidget {
               const SizedBox(width: 8),
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed: () => s.demoPathBlocked(
-                    reason: 'blind_spot',
-                    avoidDirection: 'left',
+                  onPressed: () => s.demoObstacleAvoid(
+                    direction: 'left',
+                    distanceM: 2.0,
                   ),
-                  icon: const Icon(Icons.alt_route_rounded),
-                  label: const Text('Thử điểm mù'),
+                  icon: const Icon(Icons.turn_left_rounded),
+                  label: const Text('Né vật cản (C1)'),
                 ),
               ),
             ],
+          ),
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: () => s.demoBlockedPath(
+                reason: 'construction',
+                avoidDirection: 'left',
+              ),
+              icon: const Icon(Icons.alt_route_rounded),
+              label: const Text('Chặn lối đi - Đổi route (C2)'),
+            ),
           ),
         ],
         const SizedBox(height: 16),

@@ -93,11 +93,24 @@ Pin không đo được thì gửi null/bỏ trường; không tự mặc địn
 
 `confidence` là giá trị model, không tự nó chứng minh cảm biến đủ tin cậy. Pi phát cảnh báo trực tiếp; mobile hiển thị và rung, tránh hai thiết bị nói đè nhau. Lỗi hệ thống gửi `{"type":"system_error","message":"..."}`; không nhét token/API key vào message.
 
-```json
-{"type":"path_blocked","reason":"blind_spot","distance_m":3.5,"avoid_direction":"left","message":"Phát hiện điểm mù và vật cản chắn lối đi. Đang tự động chuyển hướng sang bên trái."}
-```
+### Xử lý vật cản: Phân tách 2 cấp độ (Two-tier Obstacle Handling)
 
-Khi kính phát hiện điểm mù, vật cản chắn toàn bộ hành lang (`dead_end`), mất lối đi bộ (`no_sidewalk`), hoặc vật cản cần đổi tuyến (`obstacle`), kính gửi gói `path_blocked` kèm khoảng cách và hướng tránh khả dụng (`avoid_direction`: `left`/`right`). Mobile app lập tức phát âm thanh/rung cảnh báo khẩn cấp và tự động tính lại lộ trình mới (re-route) tránh điểm mù, đồng thời gửi snapshot route mới xuống kính mà không yêu cầu người dùng phải thao tác tay. Gói `hazard` mang `hazard_class: "blind_spot"` hoặc `"path_blocked"` cũng kích hoạt cơ chế chuyển hướng tự động tương tự.
+Hệ thống phân biệt rõ ràng 2 cấp độ để tránh việc gọi dịch vụ dẫn đường (GraphHopper) không cần thiết:
+
+#### 1. Cấp độ 1: Né cục bộ (Vật cản nhỏ / Điểm mù trên vỉa hè)
+Khi ToF/LiDAR quét thấy vật cản nhưng vẫn còn hành lang thoáng bên trái hoặc bên phải (`avoid_direction`: `left` / `right` / `straight`), kính gửi gói tin `obstacle_avoid`:
+```json
+{"type":"obstacle_avoid","avoid_direction":"left","distance_m":2.5,"message":"Có vật cản trên vỉa hè cách khoảng 2.5 mét. Vui lòng bước chếch sang bên trái vài bước để né."}
+```
+- **Hành vi trên App**: Mobile app chỉ đọc thông báo giọng nói TTS hướng dẫn người dùng bước né nhẹ sang bên tương ứng, rung nhẹ (`mediumImpact`), hiển thị banner cảnh báo cục bộ.
+- **Quy tắc quan trọng**: **TUYỆT ĐỐI KHÔNG gọi GraphHopper `_reroute()`**.
+
+#### 2. Cấp độ 2: Chặn hoàn toàn lối đi (Rào chắn, công trình, đường cụt)
+Khi lối đi bị bít hoàn toàn hoặc rào chắn thi công, mất vỉa hè không thể đi qua, kính gửi gói tin `path_blocked`:
+```json
+{"type":"path_blocked","reason":"construction","distance_m":3.5,"avoid_direction":"left","message":"Lối đi bị chặn hoàn toàn do rào chắn công trình. Đang tìm tuyến đường vòng mới."}
+```
+- **Hành vi trên App**: Mobile app lập tức phát âm thanh/rung cảnh báo khẩn cấp (`heavyImpact`), đánh dấu vị trí bị chặn vào danh sách `blockedLocations`, kích hoạt `_reroute()` qua GraphHopper để tính toàn bộ lộ trình mới vòng tránh đoạn đường bị chặn, và tự động đồng bộ snapshot route mới xuống kính.
 
 ## Cấu hình
 
