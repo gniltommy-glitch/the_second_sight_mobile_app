@@ -288,9 +288,33 @@ class PiSimulator:
             'message': 'Mô phỏng: có mép hụt phía trước.'})
         return web.json_response({'ok': True, 'demo': True, 'hazard_id': hazard_id})
 
+    async def obstacle_avoid(self, request):
+        # Explicit demo endpoint for Tier 1 local obstacle avoidance (no GraphHopper reroute).
+        avoid = 'left'
+        distance_m = 2.5
+        try:
+            body = await request.json()
+            if isinstance(body, dict):
+                avoid = body.get('avoid_direction', body.get('direction', avoid))
+                if isinstance(body.get('distance_m'), (int, float)):
+                    distance_m = float(body['distance_m'])
+        except Exception:
+            pass
+        dir_vi = 'bên trái' if avoid == 'left' else ('bên phải' if avoid == 'right' else 'chính giữa')
+        msg = {
+            'type': 'obstacle_avoid',
+            'demo': True,
+            'avoid_direction': avoid,
+            'distance_m': distance_m,
+            'message': f'Mô phỏng: Có vật cản trên vỉa hè cách khoảng {distance_m:.1f} mét. Vui lòng bước chếch sang {dir_vi} vài bước để né.'
+        }
+        for ws in list(self.peers):
+            await ws.send_json(msg)
+        return web.json_response({'ok': True, 'demo': True, 'avoid_direction': avoid, 'distance_m': distance_m})
+
     async def path_blocked(self, request):
-        # Explicit demo endpoint for blind spot / path blockage.
-        reason = 'blind_spot'
+        # Explicit demo endpoint for Tier 2 full path blockage (triggers GraphHopper reroute).
+        reason = 'construction'
         avoid = 'left'
         try:
             body = await request.json()
@@ -299,13 +323,14 @@ class PiSimulator:
                 avoid = body.get('avoid_direction', avoid)
         except Exception:
             pass
+        dir_vi = 'bên trái' if avoid == 'left' else ('bên phải' if avoid == 'right' else avoid)
         msg = {
             'type': 'path_blocked',
             'demo': True,
             'reason': reason,
             'distance_m': 3.5,
             'avoid_direction': avoid,
-            'message': f'Mô phỏng: Phát hiện điểm mù và vật cản chắn lối đi. Đang tự động chuyển hướng sang {avoid}.'
+            'message': f'Mô phỏng: Lối đi bị chặn hoàn toàn. Đang tự động chuyển hướng sang {dir_vi} và tìm lộ trình mới.'
         }
         for ws in list(self.peers):
             await ws.send_json(msg)
@@ -341,6 +366,7 @@ def create_app(token, voice=False, imu=None):
     app.router.add_post('/navigation/state', sim.navigation)
     app.router.add_post('/settings', sim.configure)
     app.router.add_post('/demo/hazard', sim.hazard)
+    app.router.add_post('/demo/obstacle_avoid', sim.obstacle_avoid)
     app.router.add_post('/demo/path_blocked', sim.path_blocked)
     app.router.add_post('/audio/test', sim.audio_test)
 

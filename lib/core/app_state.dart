@@ -564,6 +564,7 @@ class AppState extends ChangeNotifier {
               (j['avoid_direction'] ?? j['direction'] ?? 'left').toString(),
           distanceM: (j['distance_m'] as num?)?.toDouble(),
           message: hazard,
+          fromHazard: true,
         );
       } else if (isRerouteHazard) {
         _rerouteForBlockedPath(
@@ -571,6 +572,7 @@ class AppState extends ChangeNotifier {
           message: hazard,
           avoidDirection:
               (j['avoid_direction'] ?? j['direction']) as String?,
+          fromHazard: true,
         );
       }
     } else if (j['type'] == 'hazard_hold') {
@@ -1336,7 +1338,11 @@ class AppState extends ChangeNotifier {
     log('off_route', 'Lệch tuyến; đang tìm lại đường đi bộ');
     notifyListeners();
     try {
-      final result = await routing.route(location!, destination!);
+      final result = await routing.route(
+        location!,
+        destination!,
+        avoidPoints: blockedLocations,
+      );
       if ((!active && !offRoute) || generation != _routeGeneration) return;
       route = result;
       _resetProgress();
@@ -1362,6 +1368,7 @@ class AppState extends ChangeNotifier {
     required String direction,
     double? distanceM,
     String? message,
+    bool fromHazard = false,
   }) {
     final dirText = direction == 'left'
         ? 'bên trái'
@@ -1382,10 +1389,10 @@ class AppState extends ChangeNotifier {
 
     log('obstacle_avoid', prompt);
     notice = prompt;
-    if (vibration) unawaited(HapticFeedback.mediumImpact());
+    if (vibration && !fromHazard) unawaited(HapticFeedback.mediumImpact());
 
     // Chỉ phát âm thanh / rung hướng dẫn né cục bộ, không can thiệp vào lộ trình GraphHopper
-    unawaited(say(prompt, urgent: true));
+    if (!fromHazard) unawaited(say(prompt, urgent: true));
     notifyListeners();
   }
 
@@ -1396,6 +1403,7 @@ class AppState extends ChangeNotifier {
     String? message,
     String? avoidDirection,
     LatLng? blockedAt,
+    bool fromHazard = false,
   }) async {
     final prompt = (message != null && message.trim().isNotEmpty)
         ? message.trim()
@@ -1412,18 +1420,26 @@ class AppState extends ChangeNotifier {
     pathBlockedDirection = avoidDirection;
     pathBlockedAt = DateTime.now();
 
-    // Đánh dấu điểm bị chặn để né
+    // Đánh dấu điểm bị chặn để né (tránh trùng điểm trong bán kính 10m, giới hạn tối đa 10 điểm)
     final blockedPoint = blockedAt ?? location;
     if (blockedPoint != null) {
-      blockedLocations.add(blockedPoint);
+      final isDuplicate = blockedLocations.any(
+        (p) => meters(p, blockedPoint) < 10,
+      );
+      if (!isDuplicate) {
+        blockedLocations.add(blockedPoint);
+        if (blockedLocations.length > 10) {
+          blockedLocations.removeAt(0);
+        }
+      }
     }
 
     log('path_blocked', prompt);
     notice = prompt;
-    if (vibration) unawaited(HapticFeedback.heavyImpact());
+    if (vibration && !fromHazard) unawaited(HapticFeedback.heavyImpact());
 
-    // Ngắt lời thoại cũ và đọc cảnh báo khẩn
-    unawaited(say(prompt, urgent: true));
+    // Ngắt lời thoại cũ và đọc cảnh báo khẩn (nếu không phải hazard đã do Pi phát âm)
+    if (!fromHazard) unawaited(say(prompt, urgent: true));
 
     final isNavigating =
         active || offRoute || journey == JourneyState.navigating;
@@ -1445,7 +1461,7 @@ class AppState extends ChangeNotifier {
     String? avoidDirection,
   }) async {
     if (destination == null) return;
-    if (DateTime.now().difference(_lastObstacleReroute).inSeconds < 3 && busy) {
+    if (busy || DateTime.now().difference(_lastObstacleReroute).inSeconds < 5) {
       return;
     }
     _lastObstacleReroute = DateTime.now();
@@ -1460,7 +1476,11 @@ class AppState extends ChangeNotifier {
         newRoute = _createDemoDetourRoute(avoidDirection: avoidDirection);
       } else {
         if (location == null) return;
-        newRoute = await routing.route(location!, destination!);
+        newRoute = await routing.route(
+          location!,
+          destination!,
+          avoidPoints: blockedLocations,
+        );
       }
 
       if ((!active && !offRoute && journey != JourneyState.navigating) ||

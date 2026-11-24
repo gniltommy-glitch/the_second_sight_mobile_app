@@ -74,4 +74,86 @@ void main() {
       service.dispose();
     },
   );
+
+  test(
+    'route with avoidPoints posts GraphHopper custom_model and falls back to GET on failure',
+    () async {
+      final methods = <String>[];
+      Map<String, dynamic>? postedBody;
+      final payload = jsonEncode({
+        'paths': [
+          {
+            'distance': 150.0,
+            'time': 120000,
+            'points': {
+              'coordinates': [
+                [106.0, 10.0],
+                [106.0005, 10.0005],
+                [106.0, 10.001],
+              ],
+            },
+            'instructions': [
+              {
+                'text': 'Đi vòng tránh đoạn bị chặn',
+                'sign': 0,
+                'interval': [0, 2],
+              },
+              {
+                'text': 'Đến đích',
+                'sign': 4,
+                'interval': [2, 2],
+              },
+            ],
+          },
+        ],
+      });
+
+      final service = RoutingService(
+        client: MockClient((request) async {
+          methods.add(request.method);
+          if (request.method == 'POST') {
+            postedBody = jsonDecode(request.body) as Map<String, dynamic>;
+            return http.Response.bytes(utf8.encode(payload), 200);
+          }
+          return http.Response.bytes(utf8.encode(payload), 200);
+        }),
+      )..key = 'test-key';
+
+      final route = await service.route(
+        const LatLng(10, 106),
+        const Place('Đích', LatLng(10.001, 106)),
+        avoidPoints: const [LatLng(10.0005, 106.0)],
+      );
+      expect(methods, ['POST']);
+      expect(postedBody?['ch.disable'], isTrue);
+      expect(postedBody?['profile'], 'foot');
+      expect(
+        (postedBody?['custom_model'] as Map)['priority'],
+        isA<List>().having((l) => l.length, 'length', 1),
+      );
+      expect(route.distance, 150.0);
+      service.dispose();
+
+      // Verify fallback to GET if POST custom_model is rejected
+      final fallbackMethods = <String>[];
+      final fallbackService = RoutingService(
+        client: MockClient((request) async {
+          fallbackMethods.add(request.method);
+          if (request.method == 'POST') {
+            return http.Response.bytes(utf8.encode('not allowed'), 400);
+          }
+          return http.Response.bytes(utf8.encode(payload), 200);
+        }),
+      )..key = 'test-key';
+
+      final fallbackRoute = await fallbackService.route(
+        const LatLng(10, 106),
+        const Place('Đích', LatLng(10.001, 106)),
+        avoidPoints: const [LatLng(10.0005, 106.0)],
+      );
+      expect(fallbackMethods, ['POST', 'GET']);
+      expect(fallbackRoute.distance, 150.0);
+      fallbackService.dispose();
+    },
+  );
 }

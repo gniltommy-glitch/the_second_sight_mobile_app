@@ -1369,6 +1369,24 @@ class _MapCard extends StatelessWidget {
                           size: 44,
                         ),
                       ),
+                    for (final blocked in s.blockedLocations)
+                      Marker(
+                        point: blocked,
+                        width: 36,
+                        height: 36,
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFC2410C),
+                            shape: BoxShape.circle,
+                            border: Border.all(color: Colors.white, width: 2),
+                          ),
+                          child: const Icon(
+                            Icons.block_rounded,
+                            color: Colors.white,
+                            size: 20,
+                          ),
+                        ),
+                      ),
                   ],
                 ),
                 Align(

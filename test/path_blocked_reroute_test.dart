@@ -9,11 +9,17 @@ import 'package:secondsight/services/routing.dart';
 
 class MockRoutingService extends RoutingService {
   int routeCallCount = 0;
+  List<LatLng> lastAvoidPoints = const [];
   WalkRoute? cannedRoute;
 
   @override
-  Future<WalkRoute> route(LatLng from, Place to) async {
+  Future<WalkRoute> route(
+    LatLng from,
+    Place to, {
+    List<LatLng> avoidPoints = const [],
+  }) async {
     routeCallCount++;
+    lastAvoidPoints = List<LatLng>.from(avoidPoints);
     return cannedRoute ??
         WalkRoute(
           id: 'rerouted-route-id',
@@ -171,6 +177,7 @@ void main() {
         await Future<void>.delayed(const Duration(milliseconds: 50));
 
         expect(mockRouting.routeCallCount, 1);
+        expect(mockRouting.lastAvoidPoints, contains(curLoc));
         expect(state.route, isNotNull);
         expect(state.route!.id, 'rerouted-route-id');
         expect((state.snapshot['revision'] as int) > initialRevision, isTrue);

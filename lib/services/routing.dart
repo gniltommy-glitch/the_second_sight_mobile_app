@@ -82,23 +82,66 @@ class RoutingService {
     return places;
   }
 
-  Future<WalkRoute> route(LatLng from, Place to) async {
-    final j = await _get(
-      Uri.parse('$base/route').replace(
-        queryParameters: {
-          'key': key,
-          'point': [
-            '${from.latitude},${from.longitude}',
-            '${to.point.latitude},${to.point.longitude}',
+  Future<Map<String, dynamic>> _post(Uri uri, Map<String, dynamic> body) async {
+    if (key.isEmpty) throw Exception('Nhập GraphHopper API key trong Cài đặt.');
+    late http.Response r;
+    try {
+      r = await client
+          .post(
+            uri,
+            headers: const {'Content-Type': 'application/json'},
+            body: jsonEncode(body),
+          )
+          .timeout(const Duration(seconds: 18));
+    } on TimeoutException {
+      throw Exception(
+        'Dịch vụ bản đồ phản hồi quá chậm. Thử lại khi mạng ổn định.',
+      );
+    } on http.ClientException {
+      throw Exception('Không kết nối được dịch vụ bản đồ. Kiểm tra Internet.');
+    }
+    if (r.statusCode != 200) {
+      throw Exception(
+        'Dịch vụ bản đồ trả lỗi ${r.statusCode}. Kiểm tra key, hạn mức và mạng.',
+      );
+    }
+    return jsonDecode(r.body) as Map<String, dynamic>;
+  }
+
+  /// Build a small (~18m radius) GeoJSON polygon around a blocked point so
+  /// GraphHopper `custom_model` avoids routing through the blocked segment.
+  Map<String, dynamic> _blockedAreaFeature(int index, LatLng point) {
+    const dLat = 0.00016; // ~18 m
+    const dLng = 0.00016;
+    final minLng = point.longitude - dLng;
+    final maxLng = point.longitude + dLng;
+    final minLat = point.latitude - dLat;
+    final maxLat = point.latitude + dLat;
+    return {
+      'type': 'Feature',
+      'id': 'blocked_$index',
+      'properties': <String, dynamic>{},
+      'geometry': {
+        'type': 'Polygon',
+        'coordinates': [
+          [
+            [minLng, minLat],
+            [maxLng, minLat],
+            [maxLng, maxLat],
+            [minLng, maxLat],
+            [minLng, minLat],
           ],
-          'profile': 'foot',
-          'locale': 'vi',
-          'instructions': 'true',
-          'points_encoded': 'false',
-        },
-      ),
-    );
-    final p = (j['paths'] as List).first;
+        ],
+      },
+    };
+  }
+
+  WalkRoute _parseRouteResponse(Map<String, dynamic> j, Place to) {
+    final paths = j['paths'] as List?;
+    if (paths == null || paths.isEmpty) {
+      throw Exception('Không tìm thấy tuyến đường đi bộ phù hợp.');
+    }
+    final p = paths.first as Map<String, dynamic>;
     final points = (p['points']['coordinates'] as List)
         .map(coordinate)
         .toList();
@@ -126,6 +169,68 @@ class RoutingService {
       seconds: (p['time'] as num).toDouble() / 1000,
       created: DateTime.now(),
     );
+  }
+
+  Future<WalkRoute> route(
+    LatLng from,
+    Place to, {
+    List<LatLng> avoidPoints = const [],
+  }) async {
+    if (avoidPoints.isNotEmpty) {
+      final recentAvoid = avoidPoints.length > 5
+          ? avoidPoints.sublist(avoidPoints.length - 5)
+          : avoidPoints;
+      try {
+        final features = <Map<String, dynamic>>[];
+        final priorities = <Map<String, dynamic>>[];
+        for (var i = 0; i < recentAvoid.length; i++) {
+          features.add(_blockedAreaFeature(i, recentAvoid[i]));
+          priorities.add({'if': 'in_blocked_$i', 'multiply_by': 0});
+        }
+        final j = await _post(
+          Uri.parse('$base/route').replace(queryParameters: {'key': key}),
+          {
+            'points': [
+              [from.longitude, from.latitude],
+              [to.point.longitude, to.point.latitude],
+            ],
+            'profile': 'foot',
+            'locale': 'vi',
+            'instructions': true,
+            'points_encoded': false,
+            'ch.disable': true,
+            'custom_model': {
+              'priority': priorities,
+              'areas': {
+                'type': 'FeatureCollection',
+                'features': features,
+              },
+            },
+          },
+        );
+        return _parseRouteResponse(j, to);
+      } catch (_) {
+        // Fallback to standard GET routing if the API tier rejects custom_model
+        // or if all paths around the blocked polygon are unreachable.
+      }
+    }
+
+    final j = await _get(
+      Uri.parse('$base/route').replace(
+        queryParameters: {
+          'key': key,
+          'point': [
+            '${from.latitude},${from.longitude}',
+            '${to.point.latitude},${to.point.longitude}',
+          ],
+          'profile': 'foot',
+          'locale': 'vi',
+          'instructions': 'true',
+          'points_encoded': 'false',
+        },
+      ),
+    );
+    return _parseRouteResponse(j, to);
   }
 
   void dispose() => client.close();
