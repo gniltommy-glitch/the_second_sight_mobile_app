@@ -158,6 +158,27 @@ class PiLink {
     }
   }
 
+  Future<Map<String, dynamic>> postJson(
+    String path,
+    Map<String, dynamic> data,
+  ) async {
+    final r = await _http
+        .post(
+          _uri(path),
+          headers: {
+            'Authorization': 'Bearer $token',
+            'Content-Type': 'application/json',
+          },
+          body: jsonEncode(data),
+        )
+        .timeout(const Duration(seconds: 7));
+    if (r.statusCode != 200) {
+      throw Exception('Pi từ chối lệnh (${r.statusCode}).');
+    }
+    final decoded = jsonDecode(r.body);
+    return decoded is Map<String, dynamic> ? decoded : <String, dynamic>{};
+  }
+
   // ─── Lifecycle ───────────────────────────────────────────────────
   void disconnect() {
     _wanted = false;

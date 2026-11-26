@@ -5,12 +5,14 @@ class PairingConfig {
   final String endpoint, token;
   final String? routingKey;
   final bool allowInsecure;
+  final String? relayEndpoint;
   const PairingConfig(
     this.endpoint,
     this.token,
     this.routingKey,
-    this.allowInsecure,
-  );
+    this.allowInsecure, [
+    this.relayEndpoint,
+  ]);
 
   static PairingConfig parse(String raw) {
     const invalid = FormatException(
@@ -51,6 +53,34 @@ class PairingConfig {
     }
     final insecure = data['allow_insecure'] == true;
     if (uri.scheme == 'http' && !insecure) throw invalid;
-    return PairingConfig(endpoint.trim(), token.trim(), key?.trim(), insecure);
+
+    String? relay;
+    final rawRelay = data['relay_endpoint'];
+    if (rawRelay != null) {
+      if (rawRelay is! String) throw invalid;
+      final trimmedRelay = rawRelay.trim();
+      if (trimmedRelay.isNotEmpty) {
+        final relayUri = Uri.tryParse(trimmedRelay);
+        if (relayUri == null ||
+            !['http', 'https'].contains(relayUri.scheme) ||
+            relayUri.host.isEmpty ||
+            relayUri.userInfo.isNotEmpty ||
+            relayUri.hasQuery ||
+            relayUri.hasFragment ||
+            (relayUri.path.isNotEmpty && relayUri.path != '/')) {
+          throw invalid;
+        }
+        if (relayUri.scheme == 'http' && !insecure) throw invalid;
+        relay = trimmedRelay;
+      }
+    }
+
+    return PairingConfig(
+      endpoint.trim(),
+      token.trim(),
+      key?.trim(),
+      insecure,
+      relay,
+    );
   }
 }

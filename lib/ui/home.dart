@@ -736,6 +736,34 @@ class _HomeState extends State<Home>
                 }),
               ),
               const SizedBox(height: 12),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.photo_camera_back_outlined),
+                label: const Text('Chụp ảnh kính hỏi Người thân'),
+                onPressed: () {
+                  Navigator.pop(c);
+                  unawaited(s.perform(() => s.askCaregiverWithSnapshot()));
+                },
+              ),
+              const SizedBox(height: 10),
+              FilledButton.tonalIcon(
+                style: FilledButton.styleFrom(
+                  backgroundColor: kDanger.withValues(alpha: 0.18),
+                  foregroundColor: kDanger,
+                ),
+                icon: const Icon(Icons.sos_rounded),
+                label: const Text('Gửi SOS + Ảnh tới App Người thân'),
+                onPressed: () {
+                  Navigator.pop(c);
+                  unawaited(
+                    s.perform(
+                      () => s.triggerCaregiverSos(
+                        'Người dùng nhấn nút SOS khẩn cấp trên ứng dụng SecondSight.',
+                      ),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 12),
             ],
           ),
         ),
@@ -2485,7 +2513,7 @@ class _SettingsPage extends StatefulWidget {
 }
 
 class _SettingsPageState extends State<_SettingsPage> {
-  late final TextEditingController endpoint, token, apiKey;
+  late final TextEditingController endpoint, relayEndpoint, token, apiKey;
   final List<_ContactFields> contacts = [];
   bool saved = false;
   AppState get s => widget.state;
@@ -2494,6 +2522,7 @@ class _SettingsPageState extends State<_SettingsPage> {
   void initState() {
     super.initState();
     endpoint = TextEditingController(text: s.link.endpoint);
+    relayEndpoint = TextEditingController(text: s.caregiverLink.endpoint);
     token = TextEditingController(text: s.link.token);
     apiKey = TextEditingController(text: s.routing.key);
     for (final c in s.emergencyContacts) {
@@ -2504,6 +2533,7 @@ class _SettingsPageState extends State<_SettingsPage> {
   @override
   void dispose() {
     endpoint.dispose();
+    relayEndpoint.dispose();
     token.dispose();
     apiKey.dispose();
     for (final c in contacts) {
@@ -2556,9 +2586,13 @@ class _SettingsPageState extends State<_SettingsPage> {
       s.link.endpoint = config.endpoint;
       s.link.token = config.token;
       s.link.allowInsecure = config.allowInsecure;
+      if (config.relayEndpoint != null) {
+        s.caregiverLink.endpoint = config.relayEndpoint!;
+      }
       if (config.routingKey != null) s.routing.key = config.routingKey!;
       await s.saveSettings();
       endpoint.text = s.link.endpoint;
+      relayEndpoint.text = s.caregiverLink.endpoint;
       token.text = s.link.token;
       apiKey.text = s.routing.key;
       s.notice = 'Đã lưu cấu hình. Vào Kính để kết nối; những lần sau không cần nhập lại.';
@@ -2642,6 +2676,13 @@ class _SettingsPageState extends State<_SettingsPage> {
         controller: endpoint,
         label: 'Địa chỉ Pi',
         hint: 'https://secondsight.local:8765',
+        keyboard: TextInputType.url,
+      ),
+      const SizedBox(height: 10),
+      _Field(
+        controller: relayEndpoint,
+        label: 'Địa chỉ Caregiver Relay (tùy chọn)',
+        hint: 'http://192.168.1.50:8787',
         keyboard: TextInputType.url,
       ),
       const SizedBox(height: 10),
@@ -2755,6 +2796,7 @@ class _SettingsPageState extends State<_SettingsPage> {
           }
           s.link.endpoint = nextEndpoint;
           s.link.token = nextToken;
+          s.caregiverLink.endpoint = relayEndpoint.text.trim();
           s.routing.key = apiKey.text.trim();
           s.emergencyContacts = [
             for (final c in contacts)

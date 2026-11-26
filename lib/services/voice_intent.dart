@@ -13,6 +13,8 @@ enum VoiceCommand {
   shareLocation,
   endCall,
   cancelEmergency,
+  askCaregiver,
+  sosCaregiver,
   unknown,
 }
 
@@ -181,6 +183,27 @@ VoiceIntent parseIntent(String raw) {
 
   if (has(['con bao xa', 'bao xa nua', 'khoang cach con lai'])) {
     return const VoiceIntent(VoiceCommand.remaining);
+  }
+
+  if (has([
+    'gui anh hoi nguoi than',
+    'chup anh hoi nguoi than',
+    'hoi nguoi than',
+    'nho nguoi than xem giup',
+    'nho nguoi than nhin giup',
+    'gui anh cho nguoi than',
+  ])) {
+    return VoiceIntent(VoiceCommand.askCaregiver, original);
+  }
+
+  if (has([
+    'cuu toi voi',
+    'cuu toi',
+    'kich hoat sos',
+    'bao khan cap nguoi than',
+    'sos nguoi than',
+  ])) {
+    return const VoiceIntent(VoiceCommand.sosCaregiver);
   }
 
   // Strip leading wake/filler words to parse clean command

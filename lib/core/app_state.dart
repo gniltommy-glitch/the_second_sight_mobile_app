@@ -15,6 +15,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 
 import 'models.dart';
 import '../services/pi_link.dart';
+import '../services/caregiver_link.dart';
 import '../services/location_policy.dart';
 import '../services/routing.dart';
 import '../services/voice_intent.dart';
@@ -43,11 +44,16 @@ enum JourneyState {
 const double _kMaxAccuracyM = 20.0;
 
 class AppState extends ChangeNotifier {
-  AppState({PiLink? piLink, RoutingService? routingService})
-    : link = piLink ?? PiLink(),
-      routing = routingService ?? RoutingService();
+  AppState({
+    PiLink? piLink,
+    RoutingService? routingService,
+    CaregiverLink? caregiverRelay,
+  }) : link = piLink ?? PiLink(),
+       routing = routingService ?? RoutingService(),
+       caregiverLink = caregiverRelay ?? CaregiverLink();
   final RoutingService routing;
   final PiLink link;
+  final CaregiverLink caregiverLink;
   final tts = FlutterTts();
   late final _speechOutput = SpeechOutput(
     speak: (text) => speechReady ? tts.speak(text) : Future.value(),
@@ -339,6 +345,9 @@ class AppState extends ChangeNotifier {
       link.token = await secure.read(key: 'pi_token') ?? '';
       link.endpoint = prefs.getString('endpoint') ?? link.endpoint;
       link.allowInsecure = prefs.getBool('allow_insecure') ?? false;
+      caregiverLink.endpoint = prefs.getString('relay_endpoint') ?? '';
+      caregiverLink.token = link.token;
+      caregiverLink.allowInsecure = link.allowInsecure;
       emergencyContacts = EmergencyContact.decode(
         prefs.getString('emergency_contacts'),
         legacy: prefs.getString('emergency_phone') ?? '',
@@ -411,6 +420,20 @@ class AppState extends ChangeNotifier {
       notifyListeners();
     };
     link.onMessage = handlePiMessage;
+    caregiverLink.onConnection = (ok) {
+      log(
+        ok ? 'caregiver_connected' : 'caregiver_disconnected',
+        ok
+            ? 'Đã kết nối cầu nối người thân (Caregiver Relay)'
+            : 'Tạm ngắt kết nối Caregiver Relay',
+      );
+      if (ok) unawaited(_syncCaregiverState());
+      notifyListeners();
+    };
+    caregiverLink.onMessage = handleCaregiverMessage;
+    if (!demo && caregiverLink.isConfigured) {
+      unawaited(caregiverLink.connect().catchError((Object _) {}));
+    }
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
     loaded = true;
     notifyListeners();
@@ -596,6 +619,18 @@ class AppState extends ChangeNotifier {
       log('system_error', message);
       _healthPending['system'] =
           'Kính báo lỗi: $message. Hỗ trợ trên kính có thể gián đoạn.';
+    }
+    if (!demo &&
+        caregiverLink.connected &&
+        const {
+          'device_status',
+          'obstacle_avoid',
+          'local_obstacle',
+          'path_blocked',
+          'blocked_path',
+          'hazard',
+        }.contains(j['type'])) {
+      caregiverLink.send(j);
     }
     notifyListeners();
   }
@@ -936,6 +971,8 @@ class AppState extends ChangeNotifier {
       VoiceCommand.shareLocation,
       VoiceCommand.call,
       VoiceCommand.endCall,
+      VoiceCommand.askCaregiver,
+      VoiceCommand.sosCaregiver,
     }.contains(command)) {
       await say(
         'Mình chưa hiểu lệnh. Hãy nói nhắc lại, dừng dẫn đường, gọi người thân hoặc chia sẻ vị trí.',
@@ -962,6 +999,14 @@ class AppState extends ChangeNotifier {
         return;
       case VoiceCommand.shareLocation:
         await triggerShareLocation(intent.recipient);
+        return;
+      case VoiceCommand.askCaregiver:
+        await askCaregiverWithSnapshot(intent.destination);
+        return;
+      case VoiceCommand.sosCaregiver:
+        await triggerCaregiverSos(
+          'Người dùng kích hoạt SOS bằng giọng nói qua Aurelia.',
+        );
         return;
       case VoiceCommand.call:
         await triggerCall(intent.recipient);
@@ -1673,6 +1718,9 @@ class AppState extends ChangeNotifier {
       syncPending = false;
       return;
     }
+    if (caregiverLink.connected) {
+      unawaited(_syncCaregiverState());
+    }
     if (!link.connected || syncing) return;
     syncing = true;
     final sentRevision = _revision;
@@ -1765,7 +1813,10 @@ class AppState extends ChangeNotifier {
         'accuracy_m': accuracy.round(),
         'gps_timestamp': fixAt?.toUtc().toIso8601String(),
       };
-      if (!demo) link.send(m);
+      if (!demo) {
+        link.send(m);
+        if (caregiverLink.connected) caregiverLink.send(m);
+      }
       if (demo &&
           !_voiceBusy &&
           !commandMicOpen &&
@@ -1842,6 +1893,14 @@ class AppState extends ChangeNotifier {
     await secure.write(key: 'pi_token', value: link.token.trim());
     await prefs.setString('endpoint', link.endpoint.trim());
     await prefs.setBool('allow_insecure', link.allowInsecure);
+    await prefs.setString('relay_endpoint', caregiverLink.endpoint.trim());
+    caregiverLink.token = link.token.trim();
+    caregiverLink.allowInsecure = link.allowInsecure;
+    if (!demo && caregiverLink.isConfigured) {
+      unawaited(caregiverLink.connect().catchError((Object _) {}));
+    } else {
+      caregiverLink.disconnect();
+    }
     emergencyContacts = emergencyContacts
         .where((c) => c.phone.trim().isNotEmpty)
         .map((c) => EmergencyContact(c.name.trim(), c.phone.trim()))
@@ -2161,6 +2220,14 @@ class AppState extends ChangeNotifier {
       'emergency_automated_actions',
       'Hết thời gian đếm ngược. Tự động gửi SMS vị trí và gọi người giám hộ ưu tiên số 1.',
     );
+    if (!demo && caregiverLink.isConfigured) {
+      unawaited(
+        triggerCaregiverSos(
+          'Mất kết nối kính khi đang di chuyển — kích hoạt khẩn cấp tự động.',
+          silentTts: true,
+        ),
+      );
+    }
 
     final lat = location?.latitude.toStringAsFixed(6);
     final lng = location?.longitude.toStringAsFixed(6);
@@ -2245,6 +2312,242 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ─── Caregiver Companion Relay Integration ──────────────────────
+  Map<String, dynamic> get caregiverSnapshot {
+    final relayState = switch (journey) {
+      JourneyState.navigating || JourneyState.offRoute => 'navigating',
+      JourneyState.routing || JourneyState.ready => 'ready',
+      JourneyState.paused => 'paused',
+      JourneyState.arrived => 'arrived',
+      JourneyState.idle => 'idle',
+    };
+    return {
+      ...snapshot,
+      'state': relayState,
+      'accuracy_m': accuracy.isFinite ? double.parse(accuracy.toStringAsFixed(1)) : null,
+    };
+  }
+
+  Future<void> _syncCaregiverState() async {
+    if (demo || !caregiverLink.connected) return;
+    try {
+      await caregiverLink.post('/navigation/state', caregiverSnapshot);
+    } catch (_) {}
+  }
+
+  /// Chụp 1 tấm ảnh tĩnh từ kính (nếu đang nối Pi) và gửi sang ứng dụng Người thân.
+  Future<void> askCaregiverWithSnapshot([String? rawQuestion]) async {
+    final question = (rawQuestion == null || rawQuestion.trim().isEmpty)
+        ? 'Nhờ người thân kiểm tra hình ảnh phía trước giúp tôi.'
+        : rawQuestion.trim();
+
+    if (demo) {
+      notice = 'MÔ PHỎNG: Đã chụp ảnh kính và gửi câu hỏi tới ứng dụng Người thân.';
+      log('caregiver_assist_demo', 'Mô phỏng gửi ảnh hỏi người thân: "$question"');
+      notifyListeners();
+      await say('Đã gửi ảnh mô phỏng cho người thân. Vui lòng chờ phản hồi.');
+      return;
+    }
+
+    if (!caregiverLink.isConfigured) {
+      await say(
+        'Chưa cấu hình địa chỉ Caregiver Relay. Hãy nhờ người thân tạo mã QR ghép đôi.',
+      );
+      return;
+    }
+
+    String? imageBase64;
+    if (link.connected) {
+      try {
+        final snap = await link.postJson('/caregiver/snapshot', {
+          'question': question,
+          'broadcast': false,
+        });
+        if (snap['image_base64'] is String) {
+          imageBase64 = snap['image_base64'] as String;
+        }
+      } catch (e) {
+        log('caregiver_snapshot_warn', 'Không lấy được ảnh từ kính: $e');
+      }
+    }
+
+    try {
+      await caregiverLink.post('/assist/request', {
+        'question': question,
+        'position': location == null ? null : xy(location!),
+        'accuracy_m': accuracy.isFinite ? accuracy : null,
+        'image_base64': imageBase64,
+      });
+      notice = 'Đã gửi ảnh hiện trường cho người thân.';
+      log('caregiver_assist_sent', 'Đã gửi yêu cầu xem ảnh cho người thân');
+      notifyListeners();
+      await say(
+        imageBase64 != null
+            ? 'Đã chụp ảnh từ kính và gửi cho người thân. Vui lòng chờ phản hồi.'
+            : 'Đã gửi câu hỏi và vị trí cho người thân. Kính hiện chưa trả về ảnh chụp.',
+      );
+    } catch (e) {
+      log('caregiver_assist_error', 'Lỗi gửi tới Caregiver Relay: $e');
+      await say('Không gửi được yêu cầu tới ứng dụng người thân.');
+    }
+  }
+
+  /// Gửi tín hiệu SOS kèm tọa độ GPS và ảnh chụp hiện trường sang ứng dụng Người thân.
+  Future<void> triggerCaregiverSos(
+    String message, {
+    bool silentTts = false,
+  }) async {
+    if (demo) {
+      notice = 'MÔ PHỎNG: Đã phát tín hiệu SOS kèm ảnh tới ứng dụng Người thân.';
+      log('caregiver_sos_demo', message);
+      notifyListeners();
+      if (!silentTts) {
+        await say('Mô phỏng: Đã gửi cảnh báo khẩn cấp và ảnh hiện trường cho người thân.');
+      }
+      return;
+    }
+
+    if (!caregiverLink.isConfigured) {
+      if (!silentTts) {
+        await say('Chưa cấu hình kết nối ứng dụng người thân.');
+      }
+      return;
+    }
+
+    String? imageBase64;
+    if (link.connected) {
+      try {
+        final snap = await link.postJson('/caregiver/snapshot', {
+          'question': 'Ảnh hiện trường SOS khẩn cấp',
+          'broadcast': false,
+        });
+        if (snap['image_base64'] is String) {
+          imageBase64 = snap['image_base64'] as String;
+        }
+      } catch (_) {}
+    }
+
+    try {
+      await caregiverLink.post('/sos/trigger', {
+        'trigger': 'secondsight_wearer_app',
+        'message': message,
+        'position': location == null ? null : xy(location!),
+        'accuracy_m': accuracy.isFinite ? accuracy : null,
+        'image_base64': imageBase64,
+      });
+      log('caregiver_sos_sent', 'Đã bắn tín hiệu SOS sang Caregiver Relay');
+      if (!silentTts) {
+        await say(
+          'Đã gửi tín hiệu khẩn cấp kèm vị trí và ảnh hiện trường tới người thân.',
+          urgent: true,
+        );
+      }
+    } catch (e) {
+      log('caregiver_sos_error', 'Không gửi được SOS tới Caregiver Relay: $e');
+      if (!silentTts) {
+        await say('Không kết nối được máy chủ người thân. Hãy gọi điện khẩn cấp.');
+      }
+    }
+  }
+
+  @visibleForTesting
+  void handleCaregiverMessage(Map<String, dynamic> msg) {
+    final type = msg['type'];
+    if (type == 'caregiver_reply') {
+      final replyText = (msg['reply_text'] as String?)?.trim() ?? '';
+      if (replyText.isEmpty) return;
+      final sender = (msg['sender_name'] as String?)?.trim();
+      final senderLabel = (sender == null || sender.isEmpty) ? 'Người thân' : sender;
+      notice = '$senderLabel nhắn: "$replyText"';
+      log('caregiver_reply', '$senderLabel: $replyText');
+      notifyListeners();
+
+      if (!demo && link.connected) {
+        unawaited(
+          link
+              .post('/caregiver/speak', {
+                'request_id': msg['request_id'] ?? '',
+                'sender_name': senderLabel,
+                'reply_text': replyText,
+              })
+              .catchError((Object _) {
+                unawaited(say('$senderLabel nhắn: $replyText', urgent: true));
+              }),
+        );
+      } else {
+        unawaited(say('$senderLabel nhắn: $replyText', urgent: true));
+      }
+    } else if (type == 'destination_suggestion') {
+      unawaited(_handleCaregiverDestinationSuggestion(msg));
+    } else if (type == 'sos_resolved') {
+      final by = (msg['resolved_by'] as String?) ?? 'Người thân';
+      notice = '$by đã xác nhận tiếp nhận hỗ trợ SOS.';
+      log('caregiver_sos_resolved', notice!);
+      notifyListeners();
+      unawaited(say('$by đã xác nhận hỗ trợ an toàn cho bạn.'));
+    }
+  }
+
+  Future<void> _handleCaregiverDestinationSuggestion(
+    Map<String, dynamic> msg,
+  ) async {
+    final name = (msg['name'] as String?)?.trim() ?? '';
+    final rawPoint = msg['point'];
+    if (name.isEmpty || rawPoint is! List || rawPoint.length < 2) return;
+    final place = Place(
+      name,
+      coordinate(rawPoint),
+      address: (msg['address'] as String?)?.trim() ?? '',
+    );
+    final sender = (msg['sender_name'] as String?)?.trim() ?? 'Người thân';
+    final note = (msg['note'] as String?)?.trim() ?? '';
+    log('caregiver_dest_received', '$sender gợi ý điểm đến: ${place.label}');
+
+    if (active || offRoute || journey == JourneyState.paused) {
+      notice = '$sender gợi ý đến $name (hãy dừng hành trình hiện tại nếu muốn đổi).';
+      notifyListeners();
+      await say(
+        '$sender vừa gửi gợi ý điểm đến $name, nhưng bạn đang trong hành trình. Hãy nói dừng dẫn đường nếu muốn đổi điểm đến.',
+      );
+      return;
+    }
+
+    if (_voiceBusy || pendingConfirm != null) return;
+    _voiceBusy = true;
+    try {
+      final prompt =
+          '$sender gửi điểm đến $name'
+          '${place.address.isNotEmpty ? " tại ${place.address}" : ""}'
+          '${note.isNotEmpty ? ". Lời nhắn: $note" : ""}. '
+          'Bạn có muốn lập tuyến đi bộ đến đây không? Hãy nói có hoặc không.';
+      final answer = await _askYesNo(prompt, place);
+      if (answer != YesNo.yes) {
+        log('caregiver_dest_declined', 'Chưa xác nhận điểm đến từ người thân: $name');
+        await say('Đã bỏ qua gợi ý điểm đến từ $sender.');
+        return;
+      }
+      choose(place);
+      if (!demo) await plan();
+      final r = route;
+      if (r == null) return;
+      if (!demo && !link.connected) {
+        await say(
+          'Đã lập tuyến đi bộ đến ${r.destination.name}, ${r.distance.round()} mét. Kết nối kính khi muốn bắt đầu đi.',
+        );
+        return;
+      }
+      await start();
+      await say(
+        'Đã xác nhận điểm đến từ $sender. Bắt đầu dẫn đường đến ${r.destination.name}.',
+      );
+    } catch (e) {
+      error = e.toString().replaceFirst('Exception: ', '');
+      notifyListeners();
+    } finally {
+      _voiceBusy = false;
+    }
+  }
+
   @override
   void dispose() {
     _disposed = true;
@@ -2253,6 +2556,8 @@ class AppState extends ChangeNotifier {
     _emergencyCountdownTimer?.cancel();
     _gps?.cancel();
     link.onConnection = null;
+    caregiverLink.onConnection = null;
+    caregiverLink.dispose();
     link.dispose();
     routing.dispose();
     _speechOutput.dispose();
